@@ -1,0 +1,5411 @@
+#include "GameComponent.h"
+#include <unordered_map>
+#include <random>
+
+namespace
+{
+constexpr float refIsoTileWidth = 12.0f;
+constexpr float refIsoTileHeight = 6.0f;
+constexpr float refIsoVerticalStep = refIsoTileHeight;
+
+struct ReferenceBackdropTheme
+{
+    juce::Colour bgTop;
+    juce::Colour bgBottom;
+    juce::Colour haloLarge;
+    juce::Colour haloSmall;
+    juce::Colour ring;
+    juce::Colour grid;
+    juce::Colour headerLine;
+};
+
+ReferenceBackdropTheme referenceTheme()
+{
+    return {
+        juce::Colour::fromRGB (26, 10, 28),
+        juce::Colour::fromRGB (120, 58, 84),
+        juce::Colour::fromRGBA (255, 154, 92, 68),
+        juce::Colour::fromRGBA (255, 212, 124, 54),
+        juce::Colour::fromRGBA (255, 170, 116, 88),
+        juce::Colour::fromRGBA (255, 150, 104, 58),
+        juce::Colour::fromRGBA (255, 214, 170, 26)
+    };
+}
+
+juce::Colour withAlpha (juce::Colour colour, float alpha)
+{
+    return colour.withAlpha (alpha);
+}
+
+void fillGlow (juce::Graphics& g, juce::Rectangle<float> area, juce::Colour colour, float alpha)
+{
+    juce::ColourGradient glow (withAlpha (colour, alpha), area.getCentreX(), area.getCentreY(),
+                               withAlpha (colour, 0.0f), area.getRight(), area.getBottom(), true);
+    g.setGradientFill (glow);
+    g.fillEllipse (area);
+}
+
+void drawPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour lightColour)
+{
+    auto panel = area.toFloat();
+    constexpr float radius = 11.0f;
+    g.setColour (juce::Colour (0xee070b16));
+    g.fillRoundedRectangle (panel, radius);
+
+    juce::ColourGradient wash (juce::Colour::fromRGBA (26, 44, 92, 238), panel.getX(), panel.getY(),
+                               juce::Colour::fromRGBA (12, 20, 44, 228), panel.getRight(), panel.getBottom(), false);
+    wash.addColour (0.38, juce::Colour::fromRGBA (34, 90, 180, 156));
+    wash.addColour (1.0, juce::Colour::fromRGBA (10, 12, 26, 236));
+    g.setGradientFill (wash);
+    g.fillRoundedRectangle (panel, radius);
+
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.fillRoundedRectangle (panel.reduced (3.0f, 3.0f).withHeight (panel.getHeight() * 0.24f), 7.0f);
+    g.setColour (withAlpha (lightColour, 0.14f));
+    g.fillRoundedRectangle (panel.reduced (3.0f).withTrimmedTop (panel.getHeight() * 0.42f), 8.0f);
+
+    g.setColour (juce::Colour::fromRGBA (118, 236, 255, 174));
+    g.drawRoundedRectangle (panel.reduced (1.0f), radius, 1.3f);
+    g.setColour (juce::Colour::fromRGBA (22, 40, 78, 255));
+    g.drawRoundedRectangle (panel.reduced (4.0f), radius - 3.0f, 1.0f);
+}
+
+void drawVignette (juce::Graphics& g, juce::Rectangle<int> bounds)
+{
+    juce::Path border;
+    border.addRectangle (bounds.toFloat());
+    border.addRoundedRectangle (bounds.toFloat().reduced (36.0f), 26.0f);
+    border.setUsingNonZeroWinding (false);
+
+    g.setColour (juce::Colour (0xcc020202));
+    g.fillPath (border);
+}
+
+juce::Colour warmInk()
+{
+    return juce::Colour (0xfff2dfbf);
+}
+
+juce::Colour mutedText()
+{
+    return juce::Colour (0xffbca98b);
+}
+}
+
+bool GameComponent::WaveVoice::canPlaySound (juce::SynthesiserSound* s)
+{
+    return dynamic_cast<WaveSound*> (s) != nullptr;
+}
+
+void GameComponent::WaveVoice::startNote (int midiNoteNumber, float velocity, juce::SynthesiserSound*, int)
+{
+    const auto sampleRate = getSampleRate();
+    level = velocity;
+    noteAgeSeconds = 0.0f;
+    noiseSeed = static_cast<uint32_t> (0x9E3779B9u ^ (static_cast<uint32_t> (midiNoteNumber) * 2654435761u));
+    sampleHoldValue = 0.0f;
+    sampleHoldCounter = 0;
+    sampleHoldPeriod = 1;
+    lpState = 0.0f;
+    hpState = 0.0f;
+    percussionMode = midiNoteNumber >= 120;
+    percussionType = juce::jlimit (0, 3, midiNoteNumber - 120);
+    noiseLP = 0.0f;
+    noiseHP = 0.0f;
+    lastNoise = 0.0f;
+    chipSfxType = percussionMode ? 0 : (midiNoteNumber % 4);
+
+    auto cyclesPerSecond = juce::MidiMessage::getMidiNoteInHertz (midiNoteNumber);
+    if (engine == SynthEngine::chipPulse)
+    {
+        cyclesPerSecond *= 4.0;
+        level *= 0.70710678f;
+    }
+    const auto cyclesPerSample = cyclesPerSecond / juce::jmax (1.0, sampleRate);
+    angleDelta = cyclesPerSample * juce::MathConstants<double>::twoPi;
+    currentAngle = 0.0;
+    modAngle = 0.0;
+    subAngle = 0.0;
+
+    if (engine == SynthEngine::fmGlass)
+        modDelta = cyclesPerSample * 2.0 * juce::MathConstants<double>::twoPi;
+    else if (engine == SynthEngine::titleBloom)
+        modDelta = cyclesPerSample * 1.31 * juce::MathConstants<double>::twoPi;
+    else if (engine == SynthEngine::digitalV4)
+        modDelta = cyclesPerSample * 0.613 * juce::MathConstants<double>::twoPi;
+    else if (engine == SynthEngine::chipPulse)
+        modDelta = cyclesPerSample * 5.37 * juce::MathConstants<double>::twoPi;
+    else if (engine == SynthEngine::guitarPluck)
+        modDelta = cyclesPerSample * 2.01 * juce::MathConstants<double>::twoPi;
+    else
+        modDelta = cyclesPerSample * 1.997 * juce::MathConstants<double>::twoPi;
+
+    subDelta = cyclesPerSample * 0.5 * juce::MathConstants<double>::twoPi;
+
+    if (percussionMode)
+    {
+        double drumHz = 120.0;
+        if (percussionType == 0) drumHz = 52.0;
+        else if (percussionType == 1) drumHz = 182.0;
+        else if (percussionType == 2) drumHz = 420.0;
+        else drumHz = 260.0;
+
+        const double drumCyclesPerSample = drumHz / juce::jmax (1.0, sampleRate);
+        angleDelta = drumCyclesPerSample * juce::MathConstants<double>::twoPi;
+        modDelta = drumCyclesPerSample * 2.1 * juce::MathConstants<double>::twoPi;
+        subDelta = drumCyclesPerSample * 0.5 * juce::MathConstants<double>::twoPi;
+    }
+
+    ksDelay.clear();
+    ksIndex = 0;
+    ksLast = 0.0f;
+    if (engine == SynthEngine::guitarPluck)
+    {
+        const double hz = juce::jmax (30.0, cyclesPerSecond);
+        const int ksLen = juce::jlimit (16, 4096, static_cast<int> (std::round (sampleRate / hz)));
+        ksDelay.resize (static_cast<size_t> (ksLen), 0.0f);
+        for (int i = 0; i < ksLen; ++i)
+        {
+            noiseSeed = noiseSeed * 1664525u + 1013904223u;
+            const float n = static_cast<float> ((noiseSeed >> 9) & 0x7FFFFFu) / 4194303.5f * 2.0f - 1.0f;
+            ksDelay[static_cast<size_t> (i)] = n * (0.70f * velocity);
+        }
+    }
+
+    if (percussionMode)
+    {
+        adsrParams.attack = 0.0005f;
+        adsrParams.decay = percussionType == 2 ? 0.035f : percussionType == 0 ? 0.14f : 0.09f;
+        adsrParams.sustain = 0.0f;
+        adsrParams.release = percussionType == 2 ? 0.01f : 0.03f;
+    }
+    else if (engine == SynthEngine::digitalV4)
+    {
+        adsrParams.attack = 0.006f;
+        adsrParams.decay = 0.24f;
+        adsrParams.sustain = 0.38f;
+        adsrParams.release = 0.30f;
+    }
+    else if (engine == SynthEngine::velvetNoise)
+    {
+        adsrParams.attack = 0.0004f;
+        adsrParams.decay = 0.13f;
+        adsrParams.sustain = 0.0f;
+        adsrParams.release = 0.025f;
+    }
+    else if (engine == SynthEngine::titleBloom)
+    {
+        adsrParams.attack = 0.012f;
+        adsrParams.decay = 1.35f;
+        adsrParams.sustain = 0.34f;
+        adsrParams.release = 0.72f;
+    }
+    else if (engine == SynthEngine::chipPulse)
+    {
+        adsrParams.attack = 0.0003f;
+        adsrParams.decay = 0.92f;
+        adsrParams.sustain = 0.0f;
+        adsrParams.release = 0.26f;
+    }
+    else if (engine == SynthEngine::guitarPluck)
+    {
+        adsrParams.attack = 0.0004f;
+        adsrParams.decay = 0.17f;
+        adsrParams.sustain = 0.12f;
+        adsrParams.release = 0.14f;
+    }
+    else
+    {
+        adsrParams.attack = 0.003f;
+        adsrParams.decay = 0.18f;
+        adsrParams.sustain = 0.20f;
+        adsrParams.release = 0.10f;
+    }
+
+    adsr.setParameters (adsrParams);
+    adsr.noteOn();
+}
+
+void GameComponent::WaveVoice::stopNote (float, bool allowTailOff)
+{
+    if (allowTailOff)
+        adsr.noteOff();
+    else
+        clearCurrentNote();
+}
+
+void GameComponent::WaveVoice::renderNextBlock (juce::AudioBuffer<float>& outputBuffer, int startSample, int numSamples)
+{
+    if (! isVoiceActive())
+        return;
+
+    const auto sr = static_cast<float> (juce::jmax (1.0, getSampleRate()));
+    for (int s = 0; s < numSamples; ++s)
+    {
+        const auto env = adsr.getNextSample();
+        const auto transient = std::exp (-noteAgeSeconds * 24.0f);
+
+        noiseSeed = noiseSeed * 1664525u + 1013904223u;
+        const auto white = static_cast<float> ((noiseSeed >> 9) & 0x7FFFFFu) / 4194303.5f * 2.0f - 1.0f;
+
+        if (percussionMode)
+        {
+            float voicedPerc = 0.0f;
+            switch (percussionType)
+            {
+                case 0:
+                {
+                    const float pitchDrop = 1.0f + 4.4f * std::exp (-noteAgeSeconds * 48.0f);
+                    const float body = static_cast<float> (std::sin (currentAngle * pitchDrop));
+                    const float bodyEnv = std::exp (-noteAgeSeconds * 11.5f);
+                    const float clickEnv = std::exp (-noteAgeSeconds * 165.0f);
+                    const float clickTone = static_cast<float> (std::sin (currentAngle * 10.0));
+                    voicedPerc = 0.95f * body * bodyEnv + 0.19f * clickTone * clickEnv + 0.08f * white * clickEnv;
+                    break;
+                }
+                case 1:
+                {
+                    noiseLP += 0.15f * (white - noiseLP);
+                    noiseHP = white - noiseLP;
+                    const float snapEnv = std::exp (-noteAgeSeconds * 47.0f);
+                    const float toneEnv = std::exp (-noteAgeSeconds * 20.0f);
+                    const float tone1 = static_cast<float> (std::sin (currentAngle * 1.86));
+                    const float tone2 = static_cast<float> (std::sin (currentAngle * 2.71));
+                    const float preSnap = white - lastNoise;
+                    voicedPerc = 0.42f * tone1 * toneEnv + 0.18f * tone2 * toneEnv + (0.62f * noiseHP + 0.18f * preSnap) * snapEnv;
+                    break;
+                }
+                case 2:
+                {
+                    noiseLP += 0.24f * (white - noiseLP);
+                    noiseHP = white - noiseLP;
+                    const float hat = std::exp (-noteAgeSeconds * 92.0f);
+                    const auto metallic = std::copysign (1.0f, white * 0.78f + noiseHP * 0.22f);
+                    voicedPerc = (0.56f * metallic + 0.30f * noiseHP) * hat;
+                    break;
+                }
+                case 3:
+                default:
+                {
+                    const auto diff = white - lastNoise;
+                    lastNoise = white;
+                    const auto clickEnv = static_cast<float> (std::exp (-noteAgeSeconds * 96.0f));
+                    const auto gate = (sampleHoldCounter <= 0 ? 1.0f : 0.0f);
+                    if (sampleHoldCounter <= 0)
+                        sampleHoldCounter = 2 + static_cast<int> (noiseSeed & 3u);
+                    --sampleHoldCounter;
+                    voicedPerc = (0.74f * diff + 0.16f * white) * clickEnv * gate * 1.6f;
+                    break;
+                }
+            }
+
+            voicedPerc = std::tanh (voicedPerc * 1.75f) * 0.69f;
+            const float sample = voicedPerc * level * env * 0.80f;
+            for (int c = 0; c < outputBuffer.getNumChannels(); ++c)
+                outputBuffer.addSample (c, startSample + s, sample);
+
+            currentAngle += angleDelta;
+            modAngle += modDelta;
+            subAngle += subDelta;
+            if (currentAngle >= juce::MathConstants<double>::twoPi) currentAngle -= juce::MathConstants<double>::twoPi;
+            if (modAngle >= juce::MathConstants<double>::twoPi) modAngle -= juce::MathConstants<double>::twoPi;
+            if (subAngle >= juce::MathConstants<double>::twoPi) subAngle -= juce::MathConstants<double>::twoPi;
+            noteAgeSeconds += 1.0f / sr;
+            continue;
+        }
+
+        const auto sub = static_cast<float> (std::sin (subAngle));
+        const auto click = white * transient * 0.18f;
+        float voiced = 0.0f;
+
+        if (engine == SynthEngine::digitalV4)
+        {
+            const auto vibrato = 0.009 * std::sin (modAngle * 0.14);
+            const auto oscA = std::sin (currentAngle + vibrato);
+            const auto oscB = std::sin (currentAngle * 2.0 + 0.12 * std::sin (modAngle * 0.10));
+            const auto oscC = std::sin (currentAngle * 3.0 + 0.06 * std::sin (modAngle * 0.06));
+            const auto subWarm = std::sin (subAngle + 0.05 * std::sin (modAngle * 0.05));
+            const auto raw = static_cast<float> (0.67 * oscA + 0.14 * oscB + 0.06 * oscC + 0.16 * subWarm + click * 0.002f);
+            const auto cutoff = 180.0f + 1020.0f * env + 130.0f * static_cast<float> (0.5 + 0.5 * std::sin (modAngle * 0.03));
+            const auto alpha = std::exp (-juce::MathConstants<float>::twoPi * cutoff / sr);
+            lpState = alpha * lpState + (1.0f - alpha) * raw;
+            const auto hp = raw - lpState;
+            hpState = 0.996f * hpState + 0.004f * hp;
+            voiced = static_cast<float> (std::tanh ((0.97f * lpState + 0.005f * hpState + 0.06f * subWarm) * 0.90f) * 0.66f);
+        }
+        else if (engine == SynthEngine::fmGlass)
+        {
+            const float idxMain = 0.72f * std::exp (-noteAgeSeconds * 3.6f) + 0.13f;
+            const float idxAir = 0.21f * std::exp (-noteAgeSeconds * 6.8f);
+            const auto slowDrift = 0.025f * std::sin (modAngle * 0.11);
+            const auto mod1 = std::sin (modAngle + slowDrift);
+            const auto mod2 = std::sin (modAngle * 0.75 + 0.6 * std::sin (modAngle * 0.09));
+            const auto carrier = std::sin (currentAngle + idxMain * mod1 + idxAir * mod2);
+            const auto harmonic2 = std::sin (currentAngle * 2.0 + idxMain * 0.22f * mod1);
+            const auto harmonic3 = std::sin (currentAngle * 3.0 + idxMain * 0.10f * mod2);
+            const auto glass = std::sin (currentAngle * 4.0 + modAngle * 0.07);
+            const auto raw = static_cast<float> (0.81 * carrier + 0.11 * harmonic2 + 0.05 * harmonic3 + 0.03 * glass + click * 0.012f);
+            const auto cutoff = 520.0f + 2350.0f * env + 240.0f * static_cast<float> (0.5 + 0.5 * std::sin (modAngle * 0.02));
+            const auto alpha = std::exp (-juce::MathConstants<float>::twoPi * cutoff / sr);
+            lpState = alpha * lpState + (1.0f - alpha) * raw;
+            const auto hp = raw - lpState;
+            hpState = 0.993f * hpState + 0.007f * hp;
+            voiced = static_cast<float> (std::tanh ((0.95f * lpState + 0.04f * hpState) * 0.96f) * 0.67f);
+        }
+        else if (engine == SynthEngine::titleBloom)
+        {
+            const float bloomEnv = std::exp (-noteAgeSeconds * 1.7f);
+            const float shimmerEnv = std::exp (-noteAgeSeconds * 5.4f);
+            const float airEnv = std::exp (-noteAgeSeconds * 10.0f);
+            const auto modA = std::sin (modAngle);
+            const auto modB = std::sin (modAngle * 0.53 + 0.7 * std::sin (modAngle * 0.11));
+            const auto carrier = std::sin (currentAngle + 0.34f * modA + 0.09f * modB);
+            const auto halo = std::sin (currentAngle * 2.0 + 0.11f * modA);
+            const auto shimmer = std::sin (currentAngle * 3.0 + 0.07f * modB);
+            const auto air = std::sin (currentAngle * 4.97 + modAngle * 0.08);
+            const float raw = static_cast<float> (0.70 * carrier
+                                                  + 0.16 * halo * bloomEnv
+                                                  + 0.09 * shimmer * shimmerEnv
+                                                  + 0.05 * air * airEnv
+                                                  + 0.08 * sub * bloomEnv
+                                                  + click * 0.010f);
+            const float cutoff = 420.0f + 1850.0f * env + 320.0f * static_cast<float> (0.5 + 0.5 * std::sin (modAngle * 0.03));
+            const float alpha = std::exp (-juce::MathConstants<float>::twoPi * cutoff / sr);
+            lpState = alpha * lpState + (1.0f - alpha) * raw;
+            const float hp = raw - lpState;
+            hpState = 0.996f * hpState + 0.004f * hp;
+            voiced = static_cast<float> (std::tanh ((0.90f * lpState + 0.10f * hpState + 0.05f * raw) * 0.92f) * 0.62f);
+        }
+        else if (engine == SynthEngine::chipPulse)
+        {
+            const float toneEnv = std::exp (-noteAgeSeconds * 4.8f);
+            const float metalEnv = std::exp (-noteAgeSeconds * 7.8f);
+            const float sparkleEnv = std::exp (-noteAgeSeconds * 16.0f);
+            const float strikeEnv = std::exp (-noteAgeSeconds * 84.0f);
+            noiseLP += 0.22f * (white - noiseLP);
+
+            const auto fundamental = std::sin (currentAngle);
+            const auto bell2 = std::sin (currentAngle * 2.76 + 0.18 * std::sin (modAngle * 0.27));
+            const auto bell3 = std::sin (currentAngle * 5.41 + 0.13 * std::sin (modAngle * 0.38));
+            const auto bell4 = std::sin (currentAngle * 8.93 + 0.09 * std::sin (modAngle * 0.51));
+            const auto air = std::sin (currentAngle * 11.8 + modAngle * 0.15);
+            const float strike = (0.64f * white + 0.36f * (white - noiseLP)) * strikeEnv * 0.24f;
+
+            const float raw = static_cast<float> (0.58 * fundamental * toneEnv
+                                                  + 0.24 * bell2 * metalEnv
+                                                  + 0.12 * bell3 * metalEnv
+                                                  + 0.07 * bell4 * sparkleEnv
+                                                  + 0.04 * air * sparkleEnv
+                                                  + 0.05 * sub * toneEnv
+                                                  + strike
+                                                  + click * 0.018f);
+
+            const float cutoff = 900.0f + 3400.0f * std::exp (-noteAgeSeconds * 2.2f);
+            const float alpha = std::exp (-juce::MathConstants<float>::twoPi * cutoff / sr);
+            lpState = alpha * lpState + (1.0f - alpha) * raw;
+            const float hp = raw - lpState;
+            hpState = 0.989f * hpState + 0.011f * hp;
+            voiced = std::tanh ((0.78f * lpState + 0.28f * hpState + 0.08f * raw) * 1.26f) * 0.70f;
+        }
+        else if (engine == SynthEngine::guitarPluck)
+        {
+            if (! ksDelay.empty())
+            {
+                const int n = static_cast<int> (ksDelay.size());
+                const int nextIdx = (ksIndex + 1) % n;
+                const float y0 = ksDelay[static_cast<size_t> (ksIndex)];
+                const float y1 = ksDelay[static_cast<size_t> (nextIdx)];
+                const float avg = 0.5f * (y0 + y1);
+                const float damping = 0.9925f - 0.012f * static_cast<float> (0.5 + 0.5 * std::sin (modAngle * 0.04));
+                const float pickBurst = (white - noiseLP) * std::exp (-noteAgeSeconds * 62.0f) * 0.040f;
+                noiseLP += 0.25f * (white - noiseLP);
+                const float write = avg * damping + pickBurst;
+                ksDelay[static_cast<size_t> (ksIndex)] = write;
+                ksIndex = nextIdx;
+                const float body = 0.82f * y0 + 0.12f * sub + 0.08f * click;
+                lpState += 0.14f * (body - lpState);
+                hpState += 0.010f * ((body - lpState) - hpState);
+                voiced = static_cast<float> (std::tanh ((0.92f * lpState + 0.05f * hpState + 0.08f * ksLast) * 1.12f) * 0.72f);
+                ksLast = y0;
+            }
+        }
+        else
+        {
+            const float toneEnv = std::exp (-noteAgeSeconds * 9.5f);
+            const float metalEnv = std::exp (-noteAgeSeconds * 17.0f);
+            const float strikeEnv = std::exp (-noteAgeSeconds * 95.0f);
+            noiseLP += 0.36f * (white - noiseLP);
+            const float strike = (0.72f * white + 0.28f * (white - noiseLP)) * strikeEnv * 0.20f;
+            const auto fundamental = std::sin (currentAngle);
+            const auto r2 = std::sin (currentAngle * 3.99 + 0.12 * std::sin (modAngle * 0.3));
+            const auto r3 = std::sin (currentAngle * 6.83 + 0.08 * std::sin (modAngle * 0.43));
+            const auto r4 = std::sin (currentAngle * 9.77 + 0.05 * std::sin (modAngle * 0.57));
+            const auto body = static_cast<float> (0.74 * fundamental * toneEnv + 0.17 * r2 * metalEnv
+                                                  + 0.07 * r3 * metalEnv + 0.04 * r4 * metalEnv + 0.06 * sub * toneEnv);
+            lpState += 0.18f * ((body + strike) - lpState);
+            voiced = std::tanh ((0.82f * lpState + 0.18f * body + strike) * 1.34f) * 0.72f;
+        }
+
+        const float sample = voiced * level * env;
+        for (int c = 0; c < outputBuffer.getNumChannels(); ++c)
+            outputBuffer.addSample (c, startSample + s, sample);
+
+        currentAngle += angleDelta;
+        modAngle += modDelta;
+        subAngle += subDelta;
+        if (currentAngle >= juce::MathConstants<double>::twoPi) currentAngle -= juce::MathConstants<double>::twoPi;
+        if (modAngle >= juce::MathConstants<double>::twoPi) modAngle -= juce::MathConstants<double>::twoPi;
+        if (subAngle >= juce::MathConstants<double>::twoPi) subAngle -= juce::MathConstants<double>::twoPi;
+        noteAgeSeconds += 1.0f / sr;
+    }
+
+    if (! adsr.isActive())
+        clearCurrentNote();
+}
+
+GameComponent::GameComponent()
+    : galaxy (GalaxyGenerator::generateGalaxy (0x4B4C414E))
+{
+    for (int i = 0; i < 10; ++i)
+        synth.addVoice (new WaveVoice (synthEngine));
+    synth.addSound (new WaveSound());
+
+    for (int i = 0; i < 10; ++i)
+        beatSynth.addVoice (new WaveVoice (synthEngine));
+    beatSynth.addSound (new WaveSound());
+
+    setOpaque (true);
+    setWantsKeyboardFocus (true);
+    setAudioChannels (0, 2);
+    grabKeyboardFocus();
+    updateMusicState();
+    startTimerHz (30);
+}
+
+GameComponent::~GameComponent()
+{
+    saveActivePlanet();
+    shutdownAudio();
+}
+
+void GameComponent::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds();
+    const auto theme = referenceTheme();
+    const float pulse = 0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.0013));
+    const float beatPulse = 0.5f + 0.5f * std::sin (transportPhase * juce::MathConstants<float>::twoPi);
+    const float barPulse = 0.5f + 0.5f * std::sin (transportPhase * juce::MathConstants<float>::twoPi * 0.25f);
+    juce::ColourGradient bg (theme.bgTop,
+                             static_cast<float> (bounds.getCentreX()), static_cast<float> (bounds.getY()),
+                             theme.bgBottom,
+                             static_cast<float> (bounds.getCentreX()), static_cast<float> (bounds.getBottom()),
+                             false);
+    g.setGradientFill (bg);
+    g.fillAll();
+
+    auto floatBounds = bounds.toFloat();
+    g.setColour (theme.haloLarge.withAlpha (static_cast<float> (34 + 18 * pulse) / 255.0f));
+    g.fillEllipse (floatBounds.withSizeKeepingCentre (floatBounds.getWidth() * 0.82f, floatBounds.getHeight() * 0.56f)
+                       .translated (0.0f, floatBounds.getHeight() * 0.08f));
+    g.setColour (theme.haloSmall.withAlpha (static_cast<float> (22 + 18 * pulse) / 255.0f));
+    g.fillEllipse (floatBounds.withSizeKeepingCentre (floatBounds.getWidth() * 0.46f, floatBounds.getHeight() * 0.30f)
+                       .translated (floatBounds.getWidth() * 0.10f, -floatBounds.getHeight() * 0.08f));
+
+    const auto centre = floatBounds.getCentre();
+    juce::Path rings;
+    for (int i = 0; i < 6; ++i)
+    {
+        const float w = floatBounds.getWidth() * (0.20f + i * 0.12f);
+        const float h = floatBounds.getHeight() * (0.12f + i * 0.08f);
+        rings.addEllipse (juce::Rectangle<float> (w, h).withCentre ({ centre.x, centre.y + floatBounds.getHeight() * 0.18f }));
+    }
+    g.setColour (theme.ring.withAlpha (static_cast<float> (14 + 10 * pulse) / 255.0f));
+    g.strokePath (rings, juce::PathStrokeType (1.2f));
+
+    juce::Path grid;
+    constexpr int cols = 10;
+    constexpr int rows = 7;
+    for (int i = 0; i <= cols; ++i)
+    {
+        const float x = floatBounds.getX() + floatBounds.getWidth() * (static_cast<float> (i) / static_cast<float> (cols));
+        grid.startNewSubPath (x, floatBounds.getCentreY() - 20.0f);
+        grid.lineTo (centre.x + (x - centre.x) * 0.18f, floatBounds.getBottom());
+    }
+    for (int j = 0; j <= rows; ++j)
+    {
+        const float t = static_cast<float> (j) / static_cast<float> (rows);
+        const float y = floatBounds.getCentreY() + t * t * floatBounds.getHeight() * 0.42f;
+        grid.startNewSubPath (floatBounds.getX(), y);
+        grid.lineTo (floatBounds.getRight(), y);
+    }
+    g.setColour (theme.grid);
+    g.strokePath (grid, juce::PathStrokeType (1.0f));
+
+    g.setColour (theme.headerLine.withAlpha (static_cast<float> (8 + 8 * pulse) / 255.0f));
+    g.drawLine (floatBounds.getX() + 32.0f, floatBounds.getY() + 112.0f,
+                floatBounds.getRight() - 32.0f, floatBounds.getY() + 112.0f, 1.0f);
+
+    juce::Path beatRings;
+    for (int i = 0; i < 2; ++i)
+    {
+        const float expand = 1.0f + beatPulse * (0.12f + 0.06f * static_cast<float> (i));
+        const float w = floatBounds.getWidth() * (0.34f + 0.16f * static_cast<float> (i)) * expand;
+        const float h = floatBounds.getHeight() * (0.16f + 0.08f * static_cast<float> (i)) * expand;
+        beatRings.addEllipse (juce::Rectangle<float> (w, h).withCentre ({ centre.x, centre.y + floatBounds.getHeight() * 0.18f }));
+    }
+    g.setColour (theme.ring.withAlpha (static_cast<float> (8 + 26 * beatPulse + 16 * barPulse) / 255.0f));
+    g.strokePath (beatRings, juce::PathStrokeType (1.0f + 1.2f * beatPulse));
+
+    for (int i = 0; i < 24; ++i)
+    {
+        const float t = static_cast<float> (i) / 24.0f;
+        const float x = floatBounds.getX() + floatBounds.getWidth() * std::fmod (0.11f * i + 0.02f * pulse, 1.0f);
+        const float y = floatBounds.getY() + floatBounds.getHeight() * (0.08f + t * 0.72f);
+        const float size = 1.4f + 1.8f * std::fmod (t * 7.0f + pulse, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (190, 230, 255, static_cast<uint8_t> (16 + 22 * std::fmod (t * 9.0f + pulse, 1.0f))));
+        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, y }));
+    }
+
+    if (currentScene != Scene::title)
+        drawHeader (g, bounds.removeFromTop (70));
+
+    auto content = bounds.reduced (30);
+    switch (currentScene)
+    {
+        case Scene::title:   drawTitleScene (g, content); break;
+        case Scene::galaxy:  drawGalaxyScene (g, content); break;
+        case Scene::landing: drawLandingScene (g, content); break;
+        case Scene::builder: drawBuilderScene (g, content); break;
+    }
+
+    drawVignette (g, getLocalBounds());
+}
+
+void GameComponent::resized()
+{
+    if (firstPersonCursorCaptured)
+        recenterFirstPersonMouse();
+}
+
+void GameComponent::prepareToPlay (int, double sampleRate)
+{
+    const juce::ScopedLock sl (synthLock);
+    currentSampleRate = sampleRate;
+    synth.setCurrentPlaybackSampleRate (sampleRate);
+    beatSynth.setCurrentPlaybackSampleRate (sampleRate);
+}
+
+void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
+{
+    bufferToFill.clearActiveBufferRegion();
+
+    if (currentScene == Scene::builder && performanceMode)
+    {
+        const juce::ScopedLock sl (synthLock);
+        juce::MidiBuffer midi;
+        juce::MidiBuffer beatMidi;
+        const float blockSeconds = static_cast<float> (bufferToFill.numSamples / juce::jmax (1.0, currentSampleRate));
+        const double stepSeconds = 60.0 / juce::jmax (60.0, performanceBpm) / 4.0;
+
+        double localTime = 0.0;
+        while (localTime < blockSeconds)
+        {
+            const double remainingToStep = stepSeconds - beatStepAccumulator;
+            if (localTime + remainingToStep > blockSeconds)
+            {
+                beatStepAccumulator += blockSeconds - localTime;
+                break;
+            }
+
+            localTime += remainingToStep;
+            beatStepAccumulator = 0.0;
+            const int step = beatStepIndex % 16;
+            const int phrase = beatBarIndex % 4;
+            const int sampleOffset = juce::jlimit (0, juce::jmax (0, bufferToFill.numSamples - 1),
+                                                   static_cast<int> (std::round (localTime * currentSampleRate)));
+            const float density = juce::jlimit (0.0f, 1.0f,
+                                                performanceBeatEnergy
+                                                    + 0.04f * static_cast<float> (performanceSnakes.size())
+                                                    + 0.02f * static_cast<float> (performanceDiscs.size()));
+
+            if (drumMode == DrumMode::reactiveBreakbeat)
+            {
+                const bool dense = density > 0.45f;
+                const bool frantic = density > 0.72f;
+                const bool kick = step == 0
+                               || step == 10
+                               || (step == 7 && phrase >= 1)
+                               || (step == 13 && phrase == 3)
+                               || (step == 3 && phrase == 2)
+                               || (dense && (step == 6 || step == 14))
+                               || (frantic && (step == 2 || step == 11));
+                const bool snare = step == 4 || step == 12;
+                const bool ghostSnare = (step == 3 && phrase != 0)
+                                     || (step == 11 && phrase >= 2)
+                                     || (step == 15 && phrase == 3)
+                                     || (dense && step == 6)
+                                     || (frantic && (step == 9 || step == 14));
+                const bool hat = step != 4 && step != 12;
+                const bool openHat = step == 6 || step == 14 || (dense && step == 11);
+                const bool glitch = (step == 9 && phrase >= 2) || (step == 15 && phrase == 1) || (frantic && (step == 5 || step == 13));
+
+                if (kick) addBeatEvent (beatMidi, 120, step == 0 ? 0.82f : 0.60f, sampleOffset, bufferToFill.numSamples);
+                if (snare) addBeatEvent (beatMidi, 121, 0.62f + 0.06f * static_cast<float> (phrase == 3), sampleOffset, bufferToFill.numSamples);
+                if (ghostSnare) addBeatEvent (beatMidi, 121, 0.20f + 0.05f * static_cast<float> (phrase), sampleOffset + bufferToFill.numSamples / 32, bufferToFill.numSamples);
+                if (hat) addBeatEvent (beatMidi, 122, (step % 2 == 0) ? 0.30f : 0.18f, sampleOffset, bufferToFill.numSamples);
+                if (openHat) addBeatEvent (beatMidi, 122, 0.22f, sampleOffset + bufferToFill.numSamples / 24, bufferToFill.numSamples);
+                if ((step == 5 || step == 13) && (phrase >= 1 || dense))
+                {
+                    addBeatEvent (beatMidi, 122, 0.16f, sampleOffset + bufferToFill.numSamples / 48, bufferToFill.numSamples);
+                    addBeatEvent (beatMidi, 122, 0.14f, sampleOffset + bufferToFill.numSamples / 24, bufferToFill.numSamples);
+                }
+                if (dense && (step == 7 || step == 15))
+                {
+                    addBeatEvent (beatMidi, 122, 0.12f, sampleOffset + bufferToFill.numSamples / 64, bufferToFill.numSamples);
+                    addBeatEvent (beatMidi, 122, 0.11f, sampleOffset + bufferToFill.numSamples / 40, bufferToFill.numSamples);
+                    if (frantic)
+                        addBeatEvent (beatMidi, 122, 0.10f, sampleOffset + bufferToFill.numSamples / 24, bufferToFill.numSamples);
+                }
+                if (glitch) addBeatEvent (beatMidi, 123, 0.24f + 0.08f * static_cast<float> (phrase), sampleOffset, bufferToFill.numSamples);
+            }
+            else
+            {
+                auto hit = [this, &beatMidi, sampleOffset, &bufferToFill] (int midiNote, float velocity)
+                {
+                    addBeatEvent (beatMidi, midiNote, juce::jlimit (0.0f, 1.0f, velocity * 0.80f), sampleOffset, bufferToFill.numSamples);
+                };
+
+                switch (drumMode)
+                {
+                    case DrumMode::rezStraight:
+                        if ((step % 4) == 0) hit (120, 0.82f);
+                        if (step == 4 || step == 12) hit (121, 0.60f);
+                        if ((step % 2) == 1) hit (122, 0.18f + ((step % 4) == 3 ? 0.05f : 0.0f));
+                        break;
+                    case DrumMode::tightPulse:
+                        if (step == 0 || step == 8 || step == 12) hit (120, 0.78f);
+                        if (step == 4 || step == 12) hit (121, 0.58f);
+                        if ((step % 2) == 1) hit (122, 0.17f);
+                        if (step == 15) hit (123, 0.18f);
+                        break;
+                    case DrumMode::forwardStep:
+                        if (step == 0 || step == 8 || step == 14) hit (120, 0.76f);
+                        if (step == 4 || step == 12) hit (121, 0.56f);
+                        if ((step % 2) == 1) hit (122, 0.16f + ((step == 11 || step == 15) ? 0.05f : 0.0f));
+                        break;
+                    case DrumMode::railLine:
+                        if ((step % 4) == 0) hit (120, 0.72f);
+                        if (step == 4 || step == 12) hit (121, 0.52f);
+                        if ((step % 2) == 1) hit (122, 0.15f);
+                        if (step == 8 || step == 15) hit (123, 0.16f);
+                        break;
+                    case DrumMode::reactiveBreakbeat:
+                    default:
+                        break;
+                }
+            }
+
+            ++beatStepIndex;
+            if (beatStepIndex % 16 == 0)
+                ++beatBarIndex;
+        }
+
+        for (auto it = pendingNoteOffs.begin(); it != pendingNoteOffs.end();)
+        {
+            if (it->secondsRemaining <= blockSeconds)
+            {
+                midi.addEvent (juce::MidiMessage::noteOff (1, it->note), juce::jmax (0, bufferToFill.numSamples - 1));
+                it = pendingNoteOffs.erase (it);
+            }
+            else
+            {
+                it->secondsRemaining -= blockSeconds;
+                ++it;
+            }
+        }
+
+        for (auto it = pendingBeatNoteOffs.begin(); it != pendingBeatNoteOffs.end();)
+        {
+            if (it->secondsRemaining <= blockSeconds)
+            {
+                beatMidi.addEvent (juce::MidiMessage::noteOff (1, it->note), juce::jmax (0, bufferToFill.numSamples - 1));
+                it = pendingBeatNoteOffs.erase (it);
+            }
+            else
+            {
+                it->secondsRemaining -= blockSeconds;
+                ++it;
+            }
+        }
+
+        transportPhase += static_cast<float> ((performanceBpm / 60.0) * blockSeconds * 0.25);
+        while (transportPhase > 1.0f)
+            transportPhase -= 1.0f;
+
+        synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
+        beatSynth.renderNextBlock (*bufferToFill.buffer, beatMidi, bufferToFill.startSample, bufferToFill.numSamples);
+        return;
+    }
+
+    const juce::ScopedLock sl (synthLock);
+    juce::MidiBuffer midi;
+    const float blockSeconds = static_cast<float> (bufferToFill.numSamples / juce::jmax (1.0, currentSampleRate));
+    const double ambientBpm = static_cast<double> (juce::jmap (transportRate, 0.16f, 0.42f, 72.0f, 128.0f));
+    const double stepSeconds = 60.0 / ambientBpm / (currentScene == Scene::title ? 1.0 : 2.0);
+    const auto chordNotes = getAmbientChordMidiNotes();
+
+    auto addAmbientNote = [this, &midi, &bufferToFill] (int midiNote, float velocity, float lengthSeconds, int sampleOffset)
+    {
+        midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, juce::jlimit (0.0f, 1.0f, velocity)), sampleOffset);
+        schedulePendingNoteOff (pendingNoteOffs, midiNote, lengthSeconds);
+    };
+
+    double localTime = 0.0;
+    while (localTime < blockSeconds)
+    {
+        const double remainingToStep = stepSeconds - ambientStepAccumulator;
+        if (localTime + remainingToStep > blockSeconds)
+        {
+            ambientStepAccumulator += blockSeconds - localTime;
+            break;
+        }
+
+        localTime += remainingToStep;
+        ambientStepAccumulator = 0.0;
+        const int sampleOffset = juce::jlimit (0, juce::jmax (0, bufferToFill.numSamples - 1),
+                                               static_cast<int> (std::round (localTime * currentSampleRate)));
+        const int phraseStep = ambientStepIndex % 8;
+
+        if (currentScene == Scene::title)
+        {
+            for (size_t i = 0; i < chordNotes.size(); ++i)
+                addAmbientNote (chordNotes[i], 0.10f + 0.025f * static_cast<float> (i), 0.95f, sampleOffset);
+
+            if ((phraseStep % 2) == 0)
+                addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 12 + ((phraseStep / 2) % 3) * 2), 0.12f, 0.28f, sampleOffset);
+        }
+        else if (currentScene == Scene::galaxy)
+        {
+            for (size_t i = 0; i < chordNotes.size(); ++i)
+                addAmbientNote (chordNotes[i], 0.11f + 0.03f * static_cast<float> (i == 0), 0.78f, sampleOffset);
+
+            if ((phraseStep % 2) == 1)
+                addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 7 + ((ambientStepIndex / 2) % 4)), 0.10f, 0.18f, sampleOffset);
+        }
+        else if (currentScene == Scene::landing)
+        {
+            for (size_t i = 0; i < chordNotes.size(); ++i)
+                addAmbientNote (chordNotes[i], 0.12f + 0.02f * static_cast<float> (i), 0.62f, sampleOffset);
+
+            addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 12 + (phraseStep % 3) * 2), 0.11f, 0.20f, sampleOffset);
+        }
+        else
+        {
+            for (size_t i = 0; i < chordNotes.size(); ++i)
+                addAmbientNote (chordNotes[i], 0.10f + 0.02f * static_cast<float> (i), 0.36f, sampleOffset);
+
+            if ((phraseStep % 2) == 0)
+                addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 12 + (phraseStep % 4)), 0.09f, 0.14f, sampleOffset);
+        }
+
+        ++ambientStepIndex;
+    }
+
+    for (auto it = pendingNoteOffs.begin(); it != pendingNoteOffs.end();)
+    {
+        if (it->secondsRemaining <= blockSeconds)
+        {
+            midi.addEvent (juce::MidiMessage::noteOff (1, it->note), juce::jmax (0, bufferToFill.numSamples - 1));
+            it = pendingNoteOffs.erase (it);
+        }
+        else
+        {
+            it->secondsRemaining -= blockSeconds;
+            ++it;
+        }
+    }
+
+    transportPhase += static_cast<float> ((ambientBpm / 60.0) * blockSeconds * 0.25);
+    while (transportPhase > 1.0f)
+        transportPhase -= 1.0f;
+
+    synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
+}
+
+void GameComponent::releaseResources()
+{
+    const juce::ScopedLock sl (synthLock);
+    pendingNoteOffs.clear();
+    pendingBeatNoteOffs.clear();
+}
+
+void GameComponent::mouseMove (const juce::MouseEvent& event)
+{
+    if (currentScene == Scene::title)
+    {
+        const auto nextAction = titleActionAt (event.position, getLocalBounds().toFloat());
+        if (nextAction != hoveredTitleAction)
+        {
+            hoveredTitleAction = nextAction;
+            repaint();
+        }
+        return;
+    }
+
+    if (currentScene != Scene::builder)
+        return;
+
+    if (performanceMode)
+    {
+        if (const auto cell = getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()))
+        {
+            if (! performanceHoverCell.has_value() || *performanceHoverCell != *cell)
+            {
+                performanceHoverCell = *cell;
+                repaint();
+            }
+        }
+        else if (performanceHoverCell.has_value())
+        {
+            performanceHoverCell.reset();
+            repaint();
+        }
+        return;
+    }
+
+    if (builderViewMode == BuilderViewMode::firstPerson)
+    {
+        if (! firstPersonCursorCaptured)
+            return;
+
+        const auto centre = getLocalBounds().getCentre().toFloat();
+
+        if (suppressNextMouseMove)
+        {
+            suppressNextMouseMove = false;
+            lastMousePosition = centre;
+            return;
+        }
+
+        const auto delta = event.position - centre;
+        if (std::abs (delta.x) < 0.01f && std::abs (delta.y) < 0.01f)
+            return;
+
+        constexpr float mouseSensitivity = 0.0027f;
+        firstPersonState.yaw += delta.x * mouseSensitivity;
+        firstPersonState.pitch = juce::jlimit (-1.45f, 1.45f, firstPersonState.pitch - delta.y * mouseSensitivity);
+        syncCursorToFirstPersonTarget();
+        repaint();
+
+        suppressNextMouseMove = true;
+        recenterFirstPersonMouse();
+        return;
+    }
+
+    if (updateIsometricCursorFromPosition (event.position))
+        repaint();
+}
+
+void GameComponent::mouseDrag (const juce::MouseEvent& event)
+{
+    mouseMove (event);
+}
+
+void GameComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
+{
+    if (currentScene != Scene::builder)
+        return;
+
+    if (performanceMode)
+        return;
+
+    const float delta = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
+    const float sensitivity = wheel.isSmooth ? 0.30f : 0.48f;
+    const float factor = std::exp (delta * sensitivity);
+    isometricCamera.zoom = juce::jlimit (0.2f, 10.0f, isometricCamera.zoom * factor);
+    repaint();
+}
+
+void GameComponent::mouseDown (const juce::MouseEvent& event)
+{
+    if (currentScene == Scene::builder && performanceMode)
+        return;
+
+    if (currentScene == Scene::builder && builderViewMode == BuilderViewMode::firstPerson)
+    {
+        if (event.mods.isLeftButtonDown())
+            applyFirstPersonAction (true);
+
+        if (event.mods.isRightButtonDown())
+            applyFirstPersonAction (false);
+
+        return;
+    }
+
+    lastMousePosition = event.position;
+    hasMouseAnchor = true;
+}
+
+void GameComponent::mouseUp (const juce::MouseEvent& event)
+{
+    if (currentScene == Scene::title)
+    {
+        switch (titleActionAt (event.position, getLocalBounds().toFloat()))
+        {
+            case TitleAction::beginVoyage:      enterGalaxyFromTitle (false); break;
+            case TitleAction::regenerateGalaxy: enterGalaxyFromTitle (true); break;
+            case TitleAction::descend:          ensureActivePlanetLoaded(); landOnSelectedPlanet(); break;
+            case TitleAction::none: break;
+        }
+        return;
+    }
+
+    if (currentScene == Scene::builder)
+    {
+        if (performanceMode)
+        {
+            if (const auto cell = getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()))
+            {
+                performanceHoverCell = *cell;
+
+                if (performancePlacementMode == PerformancePlacementMode::placeDisc)
+                {
+                    const auto it = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                                  [cell] (const PerformanceDisc& disc) { return disc.cell == *cell; });
+                    if (it != performanceDiscs.end())
+                        it->direction = performanceSelectedDirection;
+                    else
+                        performanceDiscs.push_back ({ *cell, performanceSelectedDirection });
+
+                    performanceSelection = { PerformanceSelection::Kind::disc, *cell };
+                    performanceFlashes.push_back ({ *cell, juce::Colour::fromRGBA (255, 208, 112, 255), 1.0f, true });
+                }
+                else if (performancePlacementMode == PerformancePlacementMode::placeTrack)
+                {
+                    const auto it = std::find_if (performanceTracks.begin(), performanceTracks.end(),
+                                                  [cell] (const PerformanceTrack& track) { return track.cell == *cell; });
+                    if (it != performanceTracks.end())
+                        it->horizontal = performanceTrackHorizontal;
+                    else
+                        performanceTracks.push_back ({ *cell, performanceTrackHorizontal });
+
+                    performanceSelection = { PerformanceSelection::Kind::track, *cell };
+                    performanceFlashes.push_back ({ *cell, juce::Colour::fromRGBA (120, 220, 255, 255), 0.9f, true });
+                }
+                else
+                {
+                    const auto disc = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                                    [cell] (const PerformanceDisc& item) { return item.cell == *cell; });
+                    if (disc != performanceDiscs.end())
+                    {
+                        performanceSelection = { PerformanceSelection::Kind::disc, *cell };
+                        performanceSelectedDirection = disc->direction;
+                    }
+                    else
+                    {
+                        const auto track = std::find_if (performanceTracks.begin(), performanceTracks.end(),
+                                                         [cell] (const PerformanceTrack& item) { return item.cell == *cell; });
+                        if (track != performanceTracks.end())
+                        {
+                            performanceSelection = { PerformanceSelection::Kind::track, *cell };
+                            performanceTrackHorizontal = track->horizontal;
+                        }
+                        else
+                        {
+                            performanceSelection = {};
+                        }
+                    }
+                }
+
+                repaint();
+            }
+            return;
+        }
+
+        if (builderViewMode == BuilderViewMode::firstPerson)
+            return;
+
+        if (event.mods.isRightButtonDown() || event.mods.isCtrlDown())
+            applyIsometricPlacement (false);
+        else
+            applyIsometricPlacement (true);
+
+        repaint();
+        return;
+    }
+
+    if (event.mods.isLeftButtonDown() || event.mods.isRightButtonDown())
+        return;
+}
+
+void GameComponent::mouseExit (const juce::MouseEvent&)
+{
+    if (currentScene == Scene::title && hoveredTitleAction != TitleAction::none)
+    {
+        hoveredTitleAction = TitleAction::none;
+        repaint();
+    }
+}
+
+bool GameComponent::keyPressed (const juce::KeyPress& key)
+{
+    const auto lowerChar = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
+
+    if (currentScene == Scene::title)
+    {
+        if (key == juce::KeyPress::returnKey || key == juce::KeyPress::spaceKey || lowerChar == 'n')
+        {
+            enterGalaxyFromTitle (false);
+            return true;
+        }
+        if (lowerChar == 'r')
+        {
+            enterGalaxyFromTitle (true);
+            return true;
+        }
+        if (lowerChar == 'd')
+        {
+            ensureActivePlanetLoaded();
+            landOnSelectedPlanet();
+            return true;
+        }
+    }
+    else if (currentScene == Scene::galaxy)
+    {
+        if (key == juce::KeyPress::leftKey)   { moveSystemSelection (-1); return true; }
+        if (key == juce::KeyPress::rightKey)  { moveSystemSelection (1); return true; }
+        if (key == juce::KeyPress::upKey)     { movePlanetSelection (-1); return true; }
+        if (key == juce::KeyPress::downKey)   { movePlanetSelection (1); return true; }
+        if (key == juce::KeyPress::returnKey) { landOnSelectedPlanet(); return true; }
+    }
+    else if (currentScene == Scene::landing)
+    {
+        if (key == juce::KeyPress::returnKey || key.getTextCharacter() == ' ')
+        {
+            enterBuilder();
+            return true;
+        }
+
+        if (key == juce::KeyPress::escapeKey)
+        {
+            leavePlanet();
+            return true;
+        }
+    }
+    else if (currentScene == Scene::builder)
+    {
+        const auto keyCode = key.getKeyCode();
+
+        if (key == juce::KeyPress::escapeKey)
+        {
+            performanceMode = false;
+            saveActivePlanet();
+            setScene (Scene::landing);
+            return true;
+        }
+
+        if (key == juce::KeyPress::returnKey)
+        {
+            performanceMode = ! performanceMode;
+            if (performanceMode)
+            {
+                performanceEntryView = builderViewMode;
+                applyTitleBloomPerformanceDefaults();
+                if (performanceSnakes.empty() && performanceAutomataCells.empty())
+                    resetPerformanceAgents();
+            }
+            else
+            {
+                builderViewMode = performanceEntryView;
+            }
+            updateFirstPersonMouseCapture();
+            repaint();
+            return true;
+        }
+
+        if (performanceMode)
+        {
+            if (lowerChar == 'm')
+            {
+                synthEngine = static_cast<SynthEngine> ((static_cast<int> (synthEngine) + 1) % 6);
+                performanceSynthIndex = static_cast<int> (synthEngine);
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'b')
+            {
+                drumMode = static_cast<DrumMode> ((static_cast<int> (drumMode) + 1) % 5);
+                performanceDrumIndex = static_cast<int> (drumMode);
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'k') { performanceKeyRoot = (performanceKeyRoot + 1) % 12; repaint(); return true; }
+            if (lowerChar == 'l')
+            {
+                scaleType = static_cast<ScaleType> ((static_cast<int> (scaleType) + 1) % 5);
+                performanceScaleIndex = static_cast<int> (scaleType);
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'h')
+            {
+                snakeTriggerMode = snakeTriggerMode == SnakeTriggerMode::headOnly
+                                     ? SnakeTriggerMode::wholeBody
+                                     : SnakeTriggerMode::headOnly;
+                repaint();
+                return true;
+            }
+            if (key.getTextCharacter() == ',') { performanceBpm = juce::jlimit (60.0, 220.0, performanceBpm - 2.0); repaint(); return true; }
+            if (key.getTextCharacter() == '.') { performanceBpm = juce::jlimit (60.0, 220.0, performanceBpm + 2.0); repaint(); return true; }
+            if (lowerChar == 'z')
+            {
+                performanceRegionMode = (performanceRegionMode + 1) % 3;
+                resetPerformanceAgents();
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'n')
+            {
+                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 4);
+                resetPerformanceAgents();
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'y')
+            {
+                if (performancePlacementMode == PerformancePlacementMode::placeDisc)
+                {
+                    static const std::array<juce::Point<int>, 4> directions { juce::Point<int> { 1, 0 }, juce::Point<int> { 0, 1 },
+                                                                              juce::Point<int> { -1, 0 }, juce::Point<int> { 0, -1 } };
+                    auto it = std::find (directions.begin(), directions.end(), performanceSelectedDirection);
+                    const auto index = it != directions.end() ? std::distance (directions.begin(), it) : 0;
+                    performanceSelectedDirection = directions[static_cast<size_t> ((index + 1) % 4)];
+                }
+                else
+                {
+                    performancePlacementMode = PerformancePlacementMode::placeDisc;
+                }
+                performanceSelection = {};
+                repaint();
+                return true;
+            }
+            if (lowerChar == 't')
+            {
+                if (performancePlacementMode == PerformancePlacementMode::placeTrack)
+                    performanceTrackHorizontal = ! performanceTrackHorizontal;
+                performancePlacementMode = PerformancePlacementMode::placeTrack;
+                performanceSelection = {};
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'u')
+            {
+                performancePlacementMode = PerformancePlacementMode::selectOnly;
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'i' && performanceHoverCell.has_value())
+            {
+                const auto it = std::find (performanceOrbitCenters.begin(), performanceOrbitCenters.end(), *performanceHoverCell);
+                if (it != performanceOrbitCenters.end())
+                    performanceOrbitCenters.erase (it);
+                else
+                    performanceOrbitCenters.push_back (*performanceHoverCell);
+                if (performanceAgentMode == PerformanceAgentMode::orbiters)
+                    resetPerformanceAgents();
+                repaint();
+                return true;
+            }
+            if (key == juce::KeyPress::backspaceKey || key == juce::KeyPress::deleteKey)
+            {
+                if (performanceSelection.kind == PerformanceSelection::Kind::disc)
+                    performanceDiscs.erase (std::remove_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                                            [this] (const PerformanceDisc& disc) { return disc.cell == performanceSelection.cell; }),
+                                            performanceDiscs.end());
+                else if (performanceSelection.kind == PerformanceSelection::Kind::track)
+                    performanceTracks.erase (std::remove_if (performanceTracks.begin(), performanceTracks.end(),
+                                                             [this] (const PerformanceTrack& track) { return track.cell == performanceSelection.cell; }),
+                                             performanceTracks.end());
+                performanceSelection = {};
+                repaint();
+                return true;
+            }
+            if (key == juce::KeyPress::leftKey) { performanceSelectedDirection = { -1, 0 }; repaint(); return true; }
+            if (key == juce::KeyPress::rightKey) { performanceSelectedDirection = { 1, 0 }; repaint(); return true; }
+            if (key == juce::KeyPress::upKey) { performanceSelectedDirection = { 0, -1 }; repaint(); return true; }
+            if (key == juce::KeyPress::downKey) { performanceSelectedDirection = { 0, 1 }; repaint(); return true; }
+            if (keyCode >= '0' && keyCode <= '8') { setPerformanceAgentCount (keyCode - '0'); repaint(); return true; }
+            return true;
+        }
+
+        if (key == juce::KeyPress::tabKey)
+        {
+            builderViewMode = builderViewMode == BuilderViewMode::isometric
+                                ? BuilderViewMode::firstPerson
+                                : BuilderViewMode::isometric;
+            if (builderViewMode == BuilderViewMode::firstPerson)
+                placeFirstPersonAtSafeSpawn();
+            updateFirstPersonMouseCapture();
+            syncCursorToFirstPersonTarget();
+            repaint();
+            return true;
+        }
+
+        if (keyCode >= '1' && keyCode <= '4')
+        {
+            isometricPlacementHeight = keyCode - '0';
+            repaint();
+            return true;
+        }
+
+        if (builderViewMode == BuilderViewMode::firstPerson)
+        {
+            if (key == juce::KeyPress::pageUpKey || key.getTextCharacter() == ']') { firstPersonPlacementOffset = juce::jlimit (1, getSurfaceHeight() - 1, firstPersonPlacementOffset + 1); syncCursorToFirstPersonTarget(); repaint(); return true; }
+            if (key == juce::KeyPress::pageDownKey || key.getTextCharacter() == '[') { firstPersonPlacementOffset = juce::jlimit (1, getSurfaceHeight() - 1, firstPersonPlacementOffset - 1); syncCursorToFirstPersonTarget(); repaint(); return true; }
+
+            if (lowerChar == 'c')
+            {
+                clearPlanetSurface();
+                repaint();
+                return true;
+            }
+
+            return false;
+        }
+
+        if (key == juce::KeyPress::leftKey) { moveIsometricCursor (-1, 0, 0); repaint(); return true; }
+        if (key == juce::KeyPress::rightKey) { moveIsometricCursor (1, 0, 0); repaint(); return true; }
+        if (key == juce::KeyPress::upKey) { moveIsometricCursor (0, -1, 0); repaint(); return true; }
+        if (key == juce::KeyPress::downKey) { moveIsometricCursor (0, 1, 0); repaint(); return true; }
+        if (key == juce::KeyPress::pageUpKey || key.getTextCharacter() == ']') { moveIsometricCursor (0, 0, 1); repaint(); return true; }
+        if (key == juce::KeyPress::pageDownKey || key.getTextCharacter() == '[') { moveIsometricCursor (0, 0, -1); repaint(); return true; }
+        if (key.getTextCharacter() == 'v') { isometricChordType = static_cast<IsometricChordType> ((static_cast<int> (isometricChordType) + 1) % 8); repaint(); return true; }
+        if (key.getTextCharacter() == 'p' || key.getTextCharacter() == ' ') { applyIsometricPlacement (true); repaint(); return true; }
+        if (key.getTextCharacter() == 'x' || key == juce::KeyPress::backspaceKey || key == juce::KeyPress::deleteKey) { applyIsometricPlacement (false); repaint(); return true; }
+        if (key.getTextCharacter() == 'c') { clearPlanetSurface(); repaint(); return true; }
+        if (key.getTextCharacter() == 'q') { isometricCamera.rotation = (isometricCamera.rotation + 3) % 4; repaint(); return true; }
+        if (key.getTextCharacter() == 'e') { isometricCamera.rotation = (isometricCamera.rotation + 1) % 4; repaint(); return true; }
+        if (key.getTextCharacter() == 'w') { isometricCamera.panY += 42.0f; repaint(); return true; }
+        if (key.getTextCharacter() == 's') { isometricCamera.panY -= 42.0f; repaint(); return true; }
+        if (key.getTextCharacter() == 'a') { isometricCamera.panX += 42.0f; repaint(); return true; }
+        if (key.getTextCharacter() == 'd') { isometricCamera.panX -= 42.0f; repaint(); return true; }
+        if (key.getTextCharacter() == '-') { isometricCamera.heightScale = juce::jlimit (0.25f, 2.0f, isometricCamera.heightScale - 0.1f); repaint(); return true; }
+        if (key.getTextCharacter() == '=') { isometricCamera.heightScale = juce::jlimit (0.25f, 2.0f, isometricCamera.heightScale + 0.1f); repaint(); return true; }
+    }
+
+    return false;
+}
+
+const StarSystemMetadata& GameComponent::getSelectedSystem() const
+{
+    return *galaxy.systems.getUnchecked (selectedSystemIndex);
+}
+
+const PlanetMetadata& GameComponent::getSelectedPlanet() const
+{
+    return *getSelectedSystem().planets.getUnchecked (selectedPlanetIndex);
+}
+
+void GameComponent::setScene (Scene newScene)
+{
+    currentScene = newScene;
+    updateMusicState();
+    updateFirstPersonMouseCapture();
+    repaint();
+}
+
+void GameComponent::moveSystemSelection (int delta)
+{
+    selectedSystemIndex = (selectedSystemIndex + delta + galaxy.systems.size()) % galaxy.systems.size();
+    selectedPlanetIndex = 0;
+    updateMusicState();
+    repaint();
+}
+
+void GameComponent::movePlanetSelection (int delta)
+{
+    const auto& system = getSelectedSystem();
+    selectedPlanetIndex = (selectedPlanetIndex + delta + system.planets.size()) % system.planets.size();
+    updateMusicState();
+    repaint();
+}
+
+void GameComponent::landOnSelectedPlanet()
+{
+    ensureActivePlanetLoaded();
+    performanceMode = false;
+    resetPerformanceState();
+    applyPerformancePresetForPlanet();
+    builderViewMode = BuilderViewMode::isometric;
+    builderCursorX = getSurfaceWidth() / 2;
+    builderCursorY = getSurfaceDepth() / 2;
+    builderLayer = 1;
+    isometricPlacementHeight = 1;
+    isometricChordType = IsometricChordType::single;
+    firstPersonPlacementOffset = 1;
+    isometricCamera = {};
+    hasMouseAnchor = false;
+    setScene (Scene::landing);
+}
+
+void GameComponent::enterBuilder()
+{
+    ensureActivePlanetLoaded();
+    performanceMode = false;
+    applyPerformancePresetForPlanet();
+    builderViewMode = BuilderViewMode::isometric;
+    firstPersonPlacementOffset = 1;
+    placeFirstPersonAtSafeSpawn();
+    hasMouseAnchor = false;
+    updateIsometricCursorFromPosition (getBuilderGridArea().getCentre().toFloat());
+    setScene (Scene::builder);
+}
+
+void GameComponent::leavePlanet()
+{
+    performanceMode = false;
+    resetPerformanceState();
+    saveActivePlanet();
+    activePlanetState.reset();
+    setScene (Scene::galaxy);
+}
+
+void GameComponent::ensureActivePlanetLoaded()
+{
+    const auto& planet = getSelectedPlanet();
+
+    if (activePlanetState != nullptr && activePlanetState->planetId == planet.id)
+        return;
+
+    activePlanetState = persistence.loadPlanet (planet.id);
+
+    if (activePlanetState == nullptr)
+    {
+        activePlanetState = std::make_unique<PlanetSurfaceState> (GalaxyGenerator::generateSurface (planet));
+        persistence.savePlanet (*activePlanetState);
+    }
+}
+
+void GameComponent::saveActivePlanet()
+{
+    if (activePlanetState != nullptr)
+        persistence.savePlanet (*activePlanetState);
+}
+
+void GameComponent::updateMusicState()
+{
+    const auto& planet = getSelectedPlanet();
+    transportRate = 0.16f + 0.12f * planet.water + (currentScene == Scene::builder ? 0.08f : 0.0f);
+
+    if (performanceMode && currentScene == Scene::builder)
+        return;
+
+    if (currentScene == Scene::title)
+    {
+        synthEngine = SynthEngine::titleBloom;
+        scaleType = ScaleType::major;
+        drumMode = DrumMode::rezStraight;
+    }
+    else if (currentScene == Scene::galaxy)
+    {
+        synthEngine = planet.energy > 0.68f ? SynthEngine::digitalV4 : SynthEngine::fmGlass;
+        scaleType = planet.water > 0.52f ? ScaleType::dorian : ScaleType::major;
+        drumMode = DrumMode::forwardStep;
+    }
+    else if (currentScene == Scene::landing)
+    {
+        synthEngine = SynthEngine::velvetNoise;
+        scaleType = planet.water > 0.45f ? ScaleType::minor : ScaleType::pentatonic;
+        drumMode = DrumMode::tightPulse;
+    }
+    else
+    {
+        synthEngine = SynthEngine::guitarPluck;
+        scaleType = ScaleType::minor;
+        drumMode = DrumMode::reactiveBreakbeat;
+    }
+
+    performanceSynthIndex = static_cast<int> (synthEngine);
+    performanceDrumIndex = static_cast<int> (drumMode);
+    performanceScaleIndex = static_cast<int> (scaleType);
+    performanceKeyRoot = getAmbientRootMidi() % 12;
+
+    const juce::ScopedLock sl (synthLock);
+    ambientStepAccumulator = 0.0;
+    ambientStepIndex = 0;
+    pendingNoteOffs.clear();
+    synth.allNotesOff (0, false);
+}
+
+int GameComponent::getAmbientRootMidi() const
+{
+    const auto hz = juce::jmax (30.0, static_cast<double> (getSelectedPlanet().musicalRootHz));
+    const auto midi = static_cast<int> (std::round (69.0 + 12.0 * std::log2 (hz / 440.0)));
+    return juce::jlimit (24, 72, quantizePerformanceMidi (midi));
+}
+
+std::vector<int> GameComponent::getAmbientChordMidiNotes() const
+{
+    const int root = getAmbientRootMidi();
+    std::vector<int> notes;
+
+    auto add = [&] (int semitones)
+    {
+        notes.push_back (quantizePerformanceMidi (root + semitones));
+    };
+
+    switch (currentScene)
+    {
+        case Scene::title:
+            add (0); add (7); add (12); break;
+        case Scene::galaxy:
+            add (0); add (7); add (12); add (16); break;
+        case Scene::landing:
+            add (0); add (3); add (7); add (10); break;
+        case Scene::builder:
+            add (0); add (5); add (7); add (12); break;
+    }
+
+    return notes;
+}
+
+int GameComponent::getSurfaceWidth() const noexcept
+{
+    return activePlanetState != nullptr ? activePlanetState->width : 16;
+}
+
+int GameComponent::getSurfaceDepth() const noexcept
+{
+    return activePlanetState != nullptr ? activePlanetState->depth : 16;
+}
+
+int GameComponent::getSurfaceHeight() const noexcept
+{
+    return PlanetSurfaceState::height;
+}
+
+int GameComponent::getTopSolidZAt (int x, int y) const noexcept
+{
+    if (activePlanetState == nullptr
+        || ! juce::isPositiveAndBelow (x, getSurfaceWidth())
+        || ! juce::isPositiveAndBelow (y, getSurfaceDepth()))
+        return 0;
+
+    for (int z = getSurfaceHeight() - 1; z >= 0; --z)
+        if (activePlanetState->getBlock (x, y, z) != 0)
+            return z;
+
+    return 0;
+}
+
+int GameComponent::getGroundZAt (int x, int y) const noexcept
+{
+    if (activePlanetState == nullptr
+        || ! juce::isPositiveAndBelow (x, getSurfaceWidth())
+        || ! juce::isPositiveAndBelow (y, getSurfaceDepth()))
+        return 0;
+
+    return activePlanetState->getBlock (x, y, 0) != 0 ? 0 : -1;
+}
+
+int GameComponent::getHighestOccupiedZ() const noexcept
+{
+    if (activePlanetState == nullptr)
+        return 0;
+
+    for (int z = getSurfaceHeight() - 1; z >= 0; --z)
+        for (int y = 0; y < getSurfaceDepth(); ++y)
+            for (int x = 0; x < getSurfaceWidth(); ++x)
+                if (activePlanetState->getBlock (x, y, z) != 0)
+                    return z;
+
+    return 0;
+}
+
+bool GameComponent::isWalkable (float x, float y, float eyeZ) const
+{
+    const auto cellX = static_cast<int> (std::floor (x));
+    const auto cellY = static_cast<int> (std::floor (y));
+    const auto feetZ = static_cast<int> (std::floor (eyeZ - 1.2f));
+    const auto headZ = static_cast<int> (std::floor (eyeZ - 0.2f));
+
+    if (! juce::isPositiveAndBelow (cellX, getSurfaceWidth())
+        || ! juce::isPositiveAndBelow (cellY, getSurfaceDepth()))
+        return false;
+
+    if (activePlanetState == nullptr)
+        return false;
+
+    const auto emptyAt = [this, cellX, cellY] (int z)
+    {
+        return ! juce::isPositiveAndBelow (z, getSurfaceHeight())
+            || activePlanetState->getBlock (cellX, cellY, z) == 0;
+    };
+
+    return emptyAt (feetZ) && emptyAt (headZ);
+}
+
+juce::Point<int> GameComponent::rotateIsometricXY (int x, int y) const
+{
+    switch (isometricCamera.rotation)
+    {
+        case 1: return { y, getSurfaceWidth() - x };
+        case 2: return { getSurfaceWidth() - x, getSurfaceDepth() - y };
+        case 3: return { getSurfaceDepth() - y, x };
+        default: break;
+    }
+
+    return { x, y };
+}
+
+juce::Point<float> GameComponent::getIsometricProjectionOffset (juce::Rectangle<float> area) const
+{
+    constexpr int boardInset = 0;
+    const int minXCoord = boardInset;
+    const int minYCoord = boardInset;
+    const int maxXCoord = getSurfaceWidth();
+    const int maxYCoord = getSurfaceDepth();
+    const auto tileWidth = refIsoTileWidth * isometricCamera.zoom;
+    const auto tileHeight = refIsoTileHeight * isometricCamera.zoom;
+    const auto verticalStep = refIsoVerticalStep * isometricCamera.zoom * isometricCamera.heightScale;
+
+    auto projectRaw = [&] (int x, int y, int z)
+    {
+        const auto rotated = rotateIsometricXY (x, y);
+        return juce::Point<float> ((rotated.x - rotated.y) * tileWidth * 0.5f,
+                                   (rotated.x + rotated.y) * tileHeight * 0.5f - z * verticalStep);
+    };
+
+    const auto occupiedHeight = juce::jlimit (1, getSurfaceHeight(), getHighestOccupiedZ() + 2);
+
+    const std::array<juce::Point<float>, 8> corners {{
+        projectRaw (minXCoord, minYCoord, 0),
+        projectRaw (maxXCoord, minYCoord, 0),
+        projectRaw (minXCoord, maxYCoord, 0),
+        projectRaw (maxXCoord, maxYCoord, 0),
+        projectRaw (minXCoord, minYCoord, occupiedHeight),
+        projectRaw (maxXCoord, minYCoord, occupiedHeight),
+        projectRaw (minXCoord, maxYCoord, occupiedHeight),
+        projectRaw (maxXCoord, maxYCoord, occupiedHeight)
+    }};
+
+    float minX = corners.front().x;
+    float maxX = corners.front().x;
+    float minY = corners.front().y;
+    float maxY = corners.front().y;
+
+    for (const auto& point : corners)
+    {
+        minX = juce::jmin (minX, point.x);
+        maxX = juce::jmax (maxX, point.x);
+        minY = juce::jmin (minY, point.y);
+        maxY = juce::jmax (maxY, point.y);
+    }
+
+    const auto projectedCentre = juce::Point<float> ((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+    auto targetCentre = area.getCentre();
+    targetCentre.y -= area.getHeight() * 0.075f;
+    return { targetCentre.x - projectedCentre.x + isometricCamera.panX,
+             targetCentre.y - projectedCentre.y + isometricCamera.panY };
+}
+
+juce::Point<float> GameComponent::projectIsometricPoint (int x, int y, int z, juce::Rectangle<float> area) const
+{
+    const auto tileWidth = refIsoTileWidth * isometricCamera.zoom;
+    const auto tileHeight = refIsoTileHeight * isometricCamera.zoom;
+    const auto verticalStep = refIsoVerticalStep * isometricCamera.zoom * isometricCamera.heightScale;
+    const auto offset = getIsometricProjectionOffset (area);
+    const auto rotated = rotateIsometricXY (x, y);
+
+    return { offset.x + (rotated.x - rotated.y) * tileWidth * 0.5f,
+             offset.y + (rotated.x + rotated.y) * tileHeight * 0.5f - z * verticalStep };
+}
+
+int GameComponent::getIsometricGridLineStep() const
+{
+    if (isometricCamera.zoom < 0.35f)
+        return 16;
+    if (isometricCamera.zoom < 0.65f)
+        return 8;
+    if (isometricCamera.zoom < 1.1f)
+        return 4;
+    return 2;
+}
+
+juce::Rectangle<int> GameComponent::getBuilderGridArea() const
+{
+    auto bounds = getLocalBounds();
+    bounds.removeFromTop (70);
+    auto content = bounds.reduced (30);
+    auto gridArea = content.removeFromLeft (content.proportionOfWidth (0.64f));
+    content.removeFromLeft (16);
+    return gridArea.reduced (8);
+}
+
+juce::Rectangle<float> GameComponent::getPerformanceBoardBounds (juce::Rectangle<float> area) const
+{
+    const auto available = area.reduced (36.0f);
+    const float tileSize = juce::jmax (10.0f,
+                                       juce::jmin (available.getWidth() / static_cast<float> (getSurfaceWidth()),
+                                                   available.getHeight() / static_cast<float> (getSurfaceDepth())));
+    return juce::Rectangle<float> (tileSize * static_cast<float> (getSurfaceWidth()),
+                                   tileSize * static_cast<float> (getSurfaceDepth()))
+        .withCentre (area.getCentre());
+}
+
+juce::Rectangle<int> GameComponent::getPerformanceRegionBounds() const noexcept
+{
+    const int width = getSurfaceWidth();
+    const int depth = getSurfaceDepth();
+
+    if (performanceRegionMode == 0)
+    {
+        const int regionWidth = juce::jmax (4, width / 2);
+        const int regionDepth = juce::jmax (4, depth / 2);
+        return { (width - regionWidth) / 2, (depth - regionDepth) / 2, regionWidth, regionDepth };
+    }
+
+    if (performanceRegionMode == 1)
+    {
+        const int regionWidth = juce::jmax (6, (width * 3) / 4);
+        const int regionDepth = juce::jmax (6, (depth * 3) / 4);
+        return { (width - regionWidth) / 2, (depth - regionDepth) / 2, regionWidth, regionDepth };
+    }
+
+    return { 0, 0, width, depth };
+}
+
+std::optional<juce::Point<int>> GameComponent::getPerformanceCellAtPosition (juce::Point<float> position, juce::Rectangle<float> area) const
+{
+    const auto board = getPerformanceBoardBounds (area);
+    if (! board.contains (position))
+        return std::nullopt;
+
+    const float tileSize = board.getWidth() / static_cast<float> (getSurfaceWidth());
+    const int cellX = juce::jlimit (0, getSurfaceWidth() - 1, static_cast<int> ((position.x - board.getX()) / tileSize));
+    const int cellY = juce::jlimit (0, getSurfaceDepth() - 1, static_cast<int> ((position.y - board.getY()) / tileSize));
+    return juce::Point<int> (cellX, cellY);
+}
+
+void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
+{
+    if (! juce::isPositiveAndBelow (cell.x, getSurfaceWidth())
+        || ! juce::isPositiveAndBelow (cell.y, getSurfaceDepth()))
+        return;
+
+    const juce::ScopedLock sl (synthLock);
+    const bool titleBloomActive = synthEngine == SynthEngine::titleBloom;
+    std::vector<int> hitNotes;
+    for (int z = 1; z < getSurfaceHeight(); ++z)
+    {
+        if (activePlanetState->getBlock (cell.x, cell.y, z) == 0)
+            continue;
+
+        const int midiNote = getPerformanceMidiForHeight (z);
+        hitNotes.push_back (midiNote);
+    }
+
+    if (hitNotes.empty())
+        return;
+
+    std::sort (hitNotes.begin(), hitNotes.end());
+    hitNotes.erase (std::unique (hitNotes.begin(), hitNotes.end()), hitNotes.end());
+
+    int triggered = 0;
+    if (titleBloomActive)
+    {
+        const int beat = beatStepIndex % 16;
+        int focalNote = hitNotes.front();
+
+        if (performanceLastImprovMidi >= 0)
+        {
+            focalNote = *std::min_element (hitNotes.begin(), hitNotes.end(),
+                                           [this] (int a, int b)
+                                           {
+                                               return std::abs (a - performanceLastImprovMidi) < std::abs (b - performanceLastImprovMidi);
+                                           });
+        }
+        else if (hitNotes.size() >= 3)
+        {
+            focalNote = hitNotes[hitNotes.size() / 2];
+        }
+
+        if ((beat % 8) == 4 && hitNotes.size() >= 2)
+            focalNote = hitNotes.back();
+        else if ((beat % 4) == 0)
+            focalNote = hitNotes.front();
+
+        const float velocity = juce::jlimit (0.18f, 0.52f, 0.24f + 0.025f * static_cast<float> (hitNotes.size()));
+        synth.noteOn (1, focalNote, velocity);
+        schedulePendingNoteOff (pendingNoteOffs, focalNote, 1.30f);
+
+        const int haloNote = quantizePerformanceMidi (focalNote + 12);
+        synth.noteOn (1, haloNote, velocity * 0.14f);
+        schedulePendingNoteOff (pendingNoteOffs, haloNote, 1.55f);
+        triggered = 1;
+        performanceLastImprovMidi = focalNote;
+    }
+    else
+    {
+        for (size_t i = 0; i < hitNotes.size(); ++i)
+        {
+            const int midiNote = hitNotes[i];
+            const float velocity = juce::jlimit (0.10f, 0.58f, 0.20f + 0.024f * static_cast<float> (i));
+            synth.noteOn (1, midiNote, velocity);
+            schedulePendingNoteOff (pendingNoteOffs, midiNote, 0.16f);
+            ++triggered;
+        }
+    }
+
+    addPerformanceImprovResponse (hitNotes);
+    performanceBeatEnergy = juce::jmin (1.0f, performanceBeatEnergy + 0.08f + 0.03f * static_cast<float> (triggered - 1));
+    performanceFlashes.push_back ({ cell, juce::Colour::fromRGBA (120, 220, 255, 255),
+                                    juce::jmin (1.0f, 0.70f + 0.12f * static_cast<float> (triggered - 1)), false });
+}
+
+void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNotes)
+{
+    if (hitNotes.empty())
+        return;
+
+    auto sortedNotes = hitNotes;
+    std::sort (sortedNotes.begin(), sortedNotes.end());
+    sortedNotes.erase (std::unique (sortedNotes.begin(), sortedNotes.end()), sortedNotes.end());
+
+    performanceRecentHitNotes = sortedNotes;
+    ++performanceImprovCounter;
+
+    const int root = sortedNotes.front();
+    const int top = sortedNotes.back();
+    const int beat = beatStepIndex % 16;
+    const int phrase = beatBarIndex % 4;
+    const bool denseChord = sortedNotes.size() >= 3;
+
+    auto addImprovNote = [this] (int midiNote, float velocity, float lengthSeconds)
+    {
+        const int finalMidi = juce::jlimit (0, 127, quantizePerformanceMidi (midiNote));
+        synth.noteOn (1, finalMidi, juce::jlimit (0.0f, 1.0f, velocity));
+        schedulePendingNoteOff (pendingNoteOffs, finalMidi, lengthSeconds);
+        performanceLastImprovMidi = finalMidi;
+    };
+
+    const int responseRoot = quantizePerformanceMidi (root + 12);
+    const int responseTop = quantizePerformanceMidi (top + (denseChord ? 12 : 7));
+    const int responseMid = quantizePerformanceMidi (((root + top) / 2) + 12);
+    const int passing = quantizePerformanceMidi (top + ((performanceImprovCounter % 2 == 0) ? 2 : -2));
+
+    if (synthEngine == SynthEngine::titleBloom)
+    {
+        const int anchor = performanceLastImprovMidi >= 0 ? performanceLastImprovMidi : responseRoot;
+        const std::array<int, 4> candidates { responseRoot, responseMid, responseTop, passing };
+        const int chosen = *std::min_element (candidates.begin(), candidates.end(),
+                                              [anchor] (int a, int b)
+                                              {
+                                                  return std::abs (a - anchor) < std::abs (b - anchor);
+                                              });
+
+        if ((beat % 4) == 0)
+            addImprovNote (chosen, 0.16f, 0.44f);
+        else if ((beat % 4) == 2)
+            addImprovNote (quantizePerformanceMidi (chosen + ((performanceImprovCounter % 2 == 0) ? 2 : -2)), 0.12f, 0.28f);
+
+        return;
+    }
+
+    if ((beat % 4) == 0)
+        addImprovNote (responseRoot, denseChord ? 0.22f : 0.18f, denseChord ? 0.34f : 0.24f);
+
+    if (denseChord && (beat % 4) == 2)
+        addImprovNote (responseMid, 0.18f, 0.22f);
+
+    if ((beat % 8) == 6 || (phrase == 3 && beat == 15))
+        addImprovNote (responseTop, 0.16f, 0.18f);
+
+    if (denseChord && performanceBeatEnergy > 0.28f && (performanceImprovCounter % 3) == 0)
+        addImprovNote (passing, 0.12f, 0.14f);
+
+    if (synthEngine == SynthEngine::titleBloom)
+        addImprovNote (quantizePerformanceMidi (responseRoot + 12), 0.10f, 0.52f);
+}
+
+void GameComponent::applyTitleBloomPerformanceDefaults()
+{
+    const juce::ScopedLock sl (synthLock);
+    synth.allNotesOff (0, false);
+    beatSynth.allNotesOff (0, false);
+    pendingNoteOffs.clear();
+    pendingBeatNoteOffs.clear();
+
+    synthEngine = SynthEngine::titleBloom;
+    performanceSynthIndex = static_cast<int> (synthEngine);
+    scaleType = ScaleType::major;
+    performanceScaleIndex = static_cast<int> (scaleType);
+    performanceKeyRoot = getAmbientRootMidi() % 12;
+    performanceBpm = 116.0;
+    snakeTriggerMode = SnakeTriggerMode::headOnly;
+    performanceLastImprovMidi = -1;
+    performanceRecentHitNotes.clear();
+    performanceImprovCounter = 0;
+    beatStepAccumulator = 0.0;
+    beatBarIndex = 0;
+}
+
+void GameComponent::resetPerformanceState()
+{
+    {
+        const juce::ScopedLock sl (synthLock);
+        synth.allNotesOff (0, false);
+        beatSynth.allNotesOff (0, false);
+        pendingNoteOffs.clear();
+        pendingBeatNoteOffs.clear();
+    }
+
+    performanceRegionMode = 2;
+    performanceAgentCount = 1;
+    performanceAgentMode = PerformanceAgentMode::snakes;
+    performanceSnakes.clear();
+    performanceDiscs.clear();
+    performanceTracks.clear();
+    performanceOrbitCenters.clear();
+    performanceAutomataCells.clear();
+    performanceFlashes.clear();
+    performanceHoverCell.reset();
+    performanceSelectedDirection = { 1, 0 };
+    performanceTrackHorizontal = true;
+    performancePlacementMode = PerformancePlacementMode::selectOnly;
+    performanceSelection = {};
+    performanceTick = 0;
+    performanceBeatEnergy = 0.0f;
+    performanceBpm = 116.0;
+    performanceStepAccumulator = 0.0;
+    snakeTriggerMode = SnakeTriggerMode::headOnly;
+    performanceSynthIndex = static_cast<int> (SynthEngine::titleBloom);
+    performanceDrumIndex = 0;
+    performanceScaleIndex = 0;
+    performanceKeyRoot = 0;
+    performanceRecentHitNotes.clear();
+    performanceImprovCounter = 0;
+    performanceLastImprovMidi = -1;
+    synthEngine = SynthEngine::titleBloom;
+    drumMode = DrumMode::reactiveBreakbeat;
+    scaleType = ScaleType::major;
+    beatStepAccumulator = 0.0;
+    beatStepIndex = 0;
+    beatBarIndex = 0;
+}
+
+void GameComponent::applyPerformancePresetForPlanet()
+{
+    const auto& planet = getSelectedPlanet();
+    std::mt19937 rng (planet.id.hashCode());
+    std::uniform_int_distribution<int> modeDist (0, 3);
+    std::uniform_int_distribution<int> tempoDist (96, 170);
+    std::uniform_int_distribution<int> drumDist (0, 4);
+    std::uniform_int_distribution<int> scaleDist (0, 4);
+    std::uniform_int_distribution<int> rootDist (0, 11);
+    std::uniform_int_distribution<int> triggerDist (0, 1);
+
+    performanceAgentMode = static_cast<PerformanceAgentMode> (modeDist (rng));
+    performanceBpm = static_cast<double> (tempoDist (rng));
+    synthEngine = SynthEngine::titleBloom;
+    drumMode = static_cast<DrumMode> (drumDist (rng));
+    scaleType = static_cast<ScaleType> (scaleDist (rng));
+    performanceSynthIndex = static_cast<int> (synthEngine);
+    performanceDrumIndex = static_cast<int> (drumMode);
+    performanceScaleIndex = static_cast<int> (scaleType);
+    performanceKeyRoot = rootDist (rng);
+    performanceRecentHitNotes.clear();
+    performanceImprovCounter = 0;
+    performanceLastImprovMidi = -1;
+    snakeTriggerMode = triggerDist (rng) == 0 ? SnakeTriggerMode::headOnly : SnakeTriggerMode::wholeBody;
+    beatStepAccumulator = 0.0;
+    beatStepIndex = 0;
+    beatBarIndex = 0;
+    resetPerformanceAgents();
+}
+
+void GameComponent::resetPerformanceAgents()
+{
+    performanceSnakes.clear();
+    performanceAutomataCells.clear();
+    performanceFlashes.clear();
+    performanceTick = 0;
+
+    const auto bounds = getPerformanceRegionBounds();
+    if (bounds.isEmpty() || performanceAgentCount <= 0)
+        return;
+
+    juce::Random rng;
+    static const std::array<juce::Point<int>, 4> snakeDirections { juce::Point<int> { 1, 0 }, juce::Point<int> { -1, 0 },
+                                                                   juce::Point<int> { 0, 1 }, juce::Point<int> { 0, -1 } };
+    static const std::array<juce::Colour, 8> snakeColours {
+        juce::Colour::fromRGB (255, 204, 96), juce::Colour::fromRGB (105, 234, 255),
+        juce::Colour::fromRGB (255, 128, 118), juce::Colour::fromRGB (182, 126, 255),
+        juce::Colour::fromRGB (110, 214, 114), juce::Colour::fromRGB (255, 168, 84),
+        juce::Colour::fromRGB (246, 103, 220), juce::Colour::fromRGB (242, 228, 94)
+    };
+
+    if (performanceAgentMode == PerformanceAgentMode::automata)
+    {
+        const int seedCount = juce::jmax (6, performanceAgentCount * 10);
+        for (int i = 0; i < seedCount; ++i)
+        {
+            juce::Point<int> cell (bounds.getX() + rng.nextInt (bounds.getWidth()),
+                                   bounds.getY() + rng.nextInt (bounds.getHeight()));
+            if (std::find (performanceAutomataCells.begin(), performanceAutomataCells.end(), cell) == performanceAutomataCells.end())
+                performanceAutomataCells.push_back (cell);
+        }
+        return;
+    }
+
+    if (performanceAgentMode == PerformanceAgentMode::orbiters && performanceOrbitCenters.empty())
+        performanceOrbitCenters.push_back (bounds.getCentre());
+
+    for (int i = 0; i < performanceAgentCount; ++i)
+    {
+        PerformanceSnake snake;
+        snake.colour = snakeColours[static_cast<size_t> (i % static_cast<int> (snakeColours.size()))];
+        snake.direction = snakeDirections[static_cast<size_t> (rng.nextInt (static_cast<int> (snakeDirections.size())))];
+        snake.clockwise = (i % 2) == 0;
+
+        if (performanceAgentMode == PerformanceAgentMode::orbiters)
+        {
+            const auto centre = performanceOrbitCenters[static_cast<size_t> (i % static_cast<int> (performanceOrbitCenters.size()))];
+            snake.orbitIndex = i % static_cast<int> (performanceOrbitCenters.size());
+            const int radius = 2 + (i % 4);
+            snake.body.push_back ({ juce::jlimit (bounds.getX(), bounds.getRight() - 1, centre.x + radius),
+                                    juce::jlimit (bounds.getY(), bounds.getBottom() - 1, centre.y) });
+            snake.direction = snake.clockwise ? juce::Point<int> { 0, 1 } : juce::Point<int> { 0, -1 };
+        }
+        else
+        {
+            const auto start = juce::Point<int> (bounds.getX() + rng.nextInt (bounds.getWidth()),
+                                                 bounds.getY() + rng.nextInt (bounds.getHeight()));
+            snake.body.push_back (start);
+            auto tail = start;
+            for (int segment = 1; segment < 5; ++segment)
+            {
+                tail.x = juce::jlimit (bounds.getX(), bounds.getRight() - 1, tail.x - snake.direction.x);
+                tail.y = juce::jlimit (bounds.getY(), bounds.getBottom() - 1, tail.y - snake.direction.y);
+                snake.body.push_back (tail);
+            }
+        }
+
+        performanceSnakes.push_back (std::move (snake));
+    }
+}
+
+void GameComponent::setPerformanceAgentCount (int count)
+{
+    performanceAgentCount = juce::jlimit (0, 8, count);
+    resetPerformanceAgents();
+}
+
+bool GameComponent::hasPerformanceTrackAt (juce::Point<int> cell) const noexcept
+{
+    return std::find_if (performanceTracks.begin(), performanceTracks.end(),
+                         [cell] (const PerformanceTrack& track) { return track.cell == cell; }) != performanceTracks.end();
+}
+
+bool GameComponent::getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept
+{
+    const auto it = std::find_if (performanceTracks.begin(), performanceTracks.end(),
+                                  [cell] (const PerformanceTrack& track) { return track.cell == cell; });
+    return it != performanceTracks.end() ? it->horizontal : true;
+}
+
+juce::String GameComponent::getPerformanceAgentModeName() const
+{
+    switch (performanceAgentMode)
+    {
+        case PerformanceAgentMode::snakes: return "Snakes";
+        case PerformanceAgentMode::trains: return "Trains";
+        case PerformanceAgentMode::orbiters: return "Orbiters";
+        case PerformanceAgentMode::automata: return "Automata";
+    }
+
+    return "Snakes";
+}
+
+juce::String GameComponent::getPerformancePlacementModeName() const
+{
+    switch (performancePlacementMode)
+    {
+        case PerformancePlacementMode::selectOnly: return "Select";
+        case PerformancePlacementMode::placeDisc: return "Disc";
+        case PerformancePlacementMode::placeTrack: return performanceTrackHorizontal ? "Track H" : "Track V";
+    }
+
+    return "Select";
+}
+
+juce::String GameComponent::getSnakeTriggerModeName() const
+{
+    return snakeTriggerMode == SnakeTriggerMode::headOnly ? "Head only" : "Whole body";
+}
+
+juce::String GameComponent::getPerformanceSynthName() const
+{
+    switch (synthEngine)
+    {
+        case SynthEngine::digitalV4:   return "Digital V4";
+        case SynthEngine::fmGlass:     return "FM Glass";
+        case SynthEngine::titleBloom:  return "Title Bloom";
+        case SynthEngine::velvetNoise: return "Velvet Noise";
+        case SynthEngine::chipPulse:   return "Electric Glockenspiel";
+        case SynthEngine::guitarPluck: return "Guitar Pluck";
+    }
+
+    return "Digital V4";
+}
+
+juce::String GameComponent::getPerformanceDrumName() const
+{
+    switch (drumMode)
+    {
+        case DrumMode::reactiveBreakbeat: return "Reactive Breakbeat";
+        case DrumMode::rezStraight:       return "Rez Straight";
+        case DrumMode::tightPulse:        return "Tight Pulse";
+        case DrumMode::forwardStep:       return "Forward Step";
+        case DrumMode::railLine:          return "Rail Line";
+    }
+
+    return "Reactive Breakbeat";
+}
+
+juce::String GameComponent::getPerformanceScaleName() const
+{
+    switch (scaleType)
+    {
+        case ScaleType::chromatic:  return "Chromatic";
+        case ScaleType::major:      return "Major";
+        case ScaleType::minor:      return "Minor";
+        case ScaleType::dorian:     return "Dorian";
+        case ScaleType::pentatonic: return "Pentatonic";
+    }
+
+    return "Chromatic";
+}
+
+juce::String GameComponent::getPerformanceKeyName() const
+{
+    static constexpr std::array<const char*, 12> names {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+    return names[static_cast<size_t> (juce::jlimit (0, 11, performanceKeyRoot))];
+}
+
+std::vector<int> GameComponent::getPerformanceScaleSteps() const
+{
+    switch (scaleType)
+    {
+        case ScaleType::chromatic:  return { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+        case ScaleType::major:      return { 0, 2, 4, 5, 7, 9, 11 };
+        case ScaleType::minor:      return { 0, 2, 3, 5, 7, 8, 10 };
+        case ScaleType::dorian:     return { 0, 2, 3, 5, 7, 9, 10 };
+        case ScaleType::pentatonic: return { 0, 2, 4, 7, 9 };
+    }
+
+    return { 0, 2, 3, 5, 7, 8, 10 };
+}
+
+int GameComponent::quantizePerformanceMidi (int midi) const
+{
+    const auto steps = getPerformanceScaleSteps();
+    int bestNote = midi;
+    int bestDistance = 128;
+
+    for (int n = midi - 12; n <= midi + 12; ++n)
+    {
+        const int pc = (n % 12 + 12) % 12;
+        const int rel = (pc - performanceKeyRoot + 12) % 12;
+        if (std::find (steps.begin(), steps.end(), rel) != steps.end())
+        {
+            const int d = std::abs (n - midi);
+            if (d < bestDistance)
+            {
+                bestDistance = d;
+                bestNote = n;
+            }
+        }
+    }
+
+    return bestNote;
+}
+
+int GameComponent::getPerformanceMidiForHeight (int z) const
+{
+    const int midi = juce::jlimit (0, 72, 23 + z);
+    return juce::jlimit (0, 84, quantizePerformanceMidi (midi));
+}
+
+void GameComponent::schedulePendingNoteOff (std::vector<PendingNoteOff>& queue, int midiNote, float lengthSeconds)
+{
+    for (auto& pending : queue)
+    {
+        if (pending.note == midiNote)
+        {
+            pending.secondsRemaining = juce::jmax (pending.secondsRemaining, lengthSeconds);
+            return;
+        }
+    }
+
+    queue.push_back ({ midiNote, lengthSeconds });
+}
+
+void GameComponent::addBeatEvent (juce::MidiBuffer& buffer, int midiNote, float velocity, int sampleOffset, int blockSamples)
+{
+    const int onOffset = juce::jlimit (0, juce::jmax (0, blockSamples - 1), sampleOffset);
+    buffer.addEvent (juce::MidiMessage::noteOn (1, midiNote, juce::jlimit (0.0f, 1.0f, velocity * 0.74f)), onOffset);
+    const float noteLengthSeconds = midiNote == 120 ? 0.12f : midiNote == 121 ? 0.09f : midiNote == 122 ? 0.03f : 0.05f;
+    schedulePendingNoteOff (pendingBeatNoteOffs, midiNote, noteLengthSeconds);
+}
+
+juce::Rectangle<float> GameComponent::getHotbarBoundsForGridArea (juce::Rectangle<int> area) const
+{
+    return { static_cast<float> (area.getCentreX()) - 170.0f,
+             static_cast<float> (area.getBottom()) - 68.0f,
+             340.0f,
+             48.0f };
+}
+
+juce::Rectangle<float> GameComponent::getHotbarSlotBounds (juce::Rectangle<int> area, int blockType) const
+{
+    auto bar = getHotbarBoundsForGridArea (area);
+    const float slotGap = 10.0f;
+    const float slotWidth = (bar.getWidth() - slotGap * 5.0f) / 4.0f;
+    auto slot = juce::Rectangle<float> (bar.getX() + slotGap, bar.getY() + 7.0f, slotWidth, bar.getHeight() - 14.0f);
+    slot.translate ((blockType - 1) * (slotWidth + slotGap), 0.0f);
+    return slot;
+}
+
+bool GameComponent::updateIsometricCursorFromPosition (juce::Point<float> position)
+{
+    if (currentScene != Scene::builder || builderViewMode != BuilderViewMode::isometric || activePlanetState == nullptr)
+        return false;
+
+    if (getHotbarBoundsForGridArea (getBuilderGridArea()).contains (position))
+        return false;
+
+    const auto area = getBuilderGridArea().toFloat();
+    float bestDistance = std::numeric_limits<float>::max();
+    juce::Point<int> bestCell;
+    bool found = false;
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+    {
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+        {
+            juce::Path topFace;
+            const auto aTop = projectIsometricPoint (x,     y,     builderLayer + 1, area);
+            const auto bTop = projectIsometricPoint (x + 1, y,     builderLayer + 1, area);
+            const auto cTop = projectIsometricPoint (x + 1, y + 1, builderLayer + 1, area);
+            const auto dTop = projectIsometricPoint (x,     y + 1, builderLayer + 1, area);
+            topFace.startNewSubPath (aTop);
+            topFace.lineTo (bTop);
+            topFace.lineTo (cTop);
+            topFace.lineTo (dTop);
+            topFace.closeSubPath();
+
+            if (topFace.contains (position))
+            {
+                bestCell = { x, y };
+                found = true;
+                bestDistance = 0.0f;
+                break;
+            }
+
+            const auto centre = juce::Point<float> ((aTop.x + cTop.x) * 0.5f, (aTop.y + cTop.y) * 0.5f);
+            const auto distance = centre.getDistanceSquaredFrom (position);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestCell = { x, y };
+                found = true;
+            }
+        }
+        if (bestDistance == 0.0f)
+            break;
+    }
+
+    if (! found)
+        return false;
+
+    const bool changed = builderCursorX != bestCell.x || builderCursorY != bestCell.y;
+    builderCursorX = bestCell.x;
+    builderCursorY = bestCell.y;
+    return changed;
+}
+
+void GameComponent::moveIsometricCursor (int dx, int dy, int dz)
+{
+    builderCursorX = juce::jlimit (0, getSurfaceWidth() - 1, builderCursorX + dx);
+    builderCursorY = juce::jlimit (0, getSurfaceDepth() - 1, builderCursorY + dy);
+    builderLayer = juce::jlimit (0, getSurfaceHeight() - 1, builderLayer + dz);
+}
+
+std::vector<int> GameComponent::getIsometricChordIntervals() const
+{
+    switch (isometricChordType)
+    {
+        case IsometricChordType::single: return { 0 };
+        case IsometricChordType::power: return { 0, 7 };
+        case IsometricChordType::majorTriad: return { 0, 4, 7 };
+        case IsometricChordType::minorTriad: return { 0, 3, 7 };
+        case IsometricChordType::sus2: return { 0, 2, 7 };
+        case IsometricChordType::sus4: return { 0, 5, 7 };
+        case IsometricChordType::majorSeventh: return { 0, 4, 7, 11 };
+        case IsometricChordType::minorSeventh: return { 0, 3, 7, 10 };
+    }
+
+    return { 0 };
+}
+
+std::vector<int> GameComponent::getActiveChordStackIntervals() const
+{
+    const auto baseIntervals = getIsometricChordIntervals();
+    const int desiredCount = juce::jmax (1, isometricPlacementHeight);
+
+    std::vector<int> limited;
+    limited.reserve (4);
+
+    for (const int interval : baseIntervals)
+    {
+        if (interval < 0 || interval > 12)
+            continue;
+        if (std::find (limited.begin(), limited.end(), interval) == limited.end())
+            limited.push_back (interval);
+    }
+
+    if (std::find (limited.begin(), limited.end(), 12) == limited.end())
+        limited.push_back (12);
+
+    if (static_cast<int> (limited.size()) > desiredCount)
+        limited.resize (static_cast<size_t> (desiredCount));
+
+    return limited;
+}
+
+juce::String GameComponent::getIsometricChordName() const
+{
+    switch (isometricChordType)
+    {
+        case IsometricChordType::single: return "Single";
+        case IsometricChordType::power: return "Power";
+        case IsometricChordType::majorTriad: return "Major";
+        case IsometricChordType::minorTriad: return "Minor";
+        case IsometricChordType::sus2: return "Sus2";
+        case IsometricChordType::sus4: return "Sus4";
+        case IsometricChordType::majorSeventh: return "Maj7";
+        case IsometricChordType::minorSeventh: return "Min7";
+    }
+
+    return "Single";
+}
+
+void GameComponent::placeFirstPersonAtSafeSpawn()
+{
+    if (activePlanetState == nullptr)
+        return;
+
+    constexpr float eyeHeight = 2.35f;
+    const int centreX = getSurfaceWidth() / 2;
+    const int centreY = getSurfaceDepth() / 2;
+
+    auto topSolidAt = [this] (int x, int y)
+    {
+        for (int z = getSurfaceHeight() - 1; z >= 0; --z)
+            if (activePlanetState->getBlock (x, y, z) != 0)
+                return z;
+
+        return -1;
+    };
+
+    auto trySpawnAt = [this, &topSolidAt] (int x, int y) -> bool
+    {
+        if (! juce::isPositiveAndBelow (x, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (y, getSurfaceDepth()))
+            return false;
+
+        constexpr float eyeHeightLocal = 2.35f;
+        const float eyeZ = static_cast<float> (topSolidAt (x, y)) + eyeHeightLocal;
+        const float posX = static_cast<float> (x) + 0.5f;
+        const float posY = static_cast<float> (y) + 0.5f;
+        if (! isWalkable (posX, posY, eyeZ))
+            return false;
+
+        firstPersonState.x = posX;
+        firstPersonState.y = posY;
+        firstPersonState.eyeZ = eyeZ;
+        firstPersonState.verticalVelocity = 0.0f;
+        return true;
+    };
+
+    for (int radius = 0; radius < juce::jmax (getSurfaceWidth(), getSurfaceDepth()); ++radius)
+    {
+        for (int y = centreY - radius; y <= centreY + radius; ++y)
+            if (trySpawnAt (centreX - radius, y) || trySpawnAt (centreX + radius, y))
+                return;
+
+        for (int x = centreX - radius + 1; x <= centreX + radius - 1; ++x)
+            if (trySpawnAt (x, centreY - radius) || trySpawnAt (x, centreY + radius))
+                return;
+    }
+
+    firstPersonState.x = static_cast<float> (centreX) + 0.5f;
+    firstPersonState.y = static_cast<float> (centreY) + 0.5f;
+    firstPersonState.eyeZ = eyeHeight;
+    firstPersonState.verticalVelocity = 0.0f;
+}
+
+void GameComponent::applyIsometricPlacement (bool filled)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    const auto intervals = getActiveChordStackIntervals();
+    for (const int interval : intervals)
+    {
+        const int z = builderLayer + interval;
+        if (! juce::isPositiveAndBelow (z, getSurfaceHeight()))
+            continue;
+
+        if (! filled && z == 0)
+            continue;
+
+        const int mappedBlockType = 1 + (z % 4);
+        activePlanetState->setBlock (builderCursorX, builderCursorY, z, filled ? mappedBlockType : 0);
+    }
+
+    saveActivePlanet();
+}
+
+void GameComponent::clearPlanetSurface()
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+            activePlanetState->setBlock (x, y, 0, 1);
+
+    for (int z = 1; z < getSurfaceHeight(); ++z)
+        for (int y = 0; y < getSurfaceDepth(); ++y)
+            for (int x = 0; x < getSurfaceWidth(); ++x)
+                activePlanetState->setBlock (x, y, z, 0);
+
+    saveActivePlanet();
+}
+
+void GameComponent::syncCursorToFirstPersonTarget()
+{
+    if (builderViewMode != BuilderViewMode::firstPerson || activePlanetState == nullptr)
+        return;
+
+    const auto target = findFirstPersonTarget();
+    if (target.valid)
+    {
+        builderCursorX = target.hitX;
+        builderCursorY = target.hitY;
+        builderLayer = juce::jlimit (1, getSurfaceHeight() - 1, getGroundZAt (target.hitX, target.hitY) + firstPersonPlacementOffset);
+    }
+    else
+    {
+        builderCursorX = juce::jlimit (0, getSurfaceWidth() - 1, static_cast<int> (std::floor (firstPersonState.x)));
+        builderCursorY = juce::jlimit (0, getSurfaceDepth() - 1, static_cast<int> (std::floor (firstPersonState.y)));
+        builderLayer = juce::jlimit (1, getSurfaceHeight() - 1, getGroundZAt (builderCursorX, builderCursorY) + firstPersonPlacementOffset);
+    }
+}
+
+GameComponent::TargetedVoxel GameComponent::findFirstPersonTarget() const
+{
+    TargetedVoxel target;
+    if (activePlanetState == nullptr)
+        return target;
+
+    const float originX = firstPersonState.x;
+    const float originY = firstPersonState.y;
+    const float originZ = firstPersonState.eyeZ;
+    const float cosPitch = std::cos (firstPersonState.pitch);
+    const float dirX = std::sin (firstPersonState.yaw) * cosPitch;
+    const float dirY = std::cos (firstPersonState.yaw) * cosPitch;
+    const float dirZ = std::sin (firstPersonState.pitch);
+
+    constexpr float maxDistance = 12.0f;
+    constexpr float stepSize = 0.05f;
+
+    for (float distance = 0.0f; distance <= maxDistance; distance += stepSize)
+    {
+        const auto sampleX = originX + dirX * distance;
+        const auto sampleY = originY + dirY * distance;
+        const auto sampleZ = originZ + dirZ * distance;
+        const auto cellX = static_cast<int> (std::floor (sampleX));
+        const auto cellY = static_cast<int> (std::floor (sampleY));
+        if (! juce::isPositiveAndBelow (cellX, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (cellY, getSurfaceDepth()))
+            continue;
+
+        const int groundZ = getGroundZAt (cellX, cellY);
+        const int topSolidZ = getTopSolidZAt (cellX, cellY);
+        const float topSurface = static_cast<float> (topSolidZ + 1);
+        const float groundTop = static_cast<float> (groundZ + 1);
+        const bool hitsStackTop = topSolidZ > groundZ && sampleZ <= topSurface + 0.02f && sampleZ >= topSurface - 0.28f;
+        const bool hitsGround = sampleZ <= groundTop + 0.02f;
+
+        if (hitsStackTop || hitsGround)
+        {
+            target.valid = true;
+            target.hitX = cellX;
+            target.hitY = cellY;
+            target.hitZ = topSolidZ;
+            target.placeX = cellX;
+            target.placeY = cellY;
+            target.placeZ = hitsStackTop
+                                ? juce::jlimit (1, getSurfaceHeight() - 1, topSolidZ + 1)
+                                : juce::jlimit (1, getSurfaceHeight() - 1, groundZ + firstPersonPlacementOffset);
+            return target;
+        }
+    }
+
+    return target;
+}
+
+void GameComponent::applyFirstPersonAction (bool placeBlock)
+{
+    if (currentScene != Scene::builder || builderViewMode != BuilderViewMode::firstPerson || activePlanetState == nullptr)
+        return;
+
+    const auto target = findFirstPersonTarget();
+    if (! target.valid)
+        return;
+
+    if (placeBlock)
+    {
+        const int placeX = target.placeX;
+        const int placeY = target.placeY;
+        const int baseZ = target.placeZ;
+
+        if (! juce::isPositiveAndBelow (placeX, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (placeY, getSurfaceDepth())
+            || ! juce::isPositiveAndBelow (baseZ, getSurfaceHeight()))
+            return;
+
+        const int mappedBlockType = 1 + (baseZ % 4);
+        if (activePlanetState->getBlock (placeX, placeY, baseZ) == mappedBlockType)
+            return;
+
+        activePlanetState->setBlock (placeX, placeY, baseZ, mappedBlockType);
+        builderCursorX = placeX;
+        builderCursorY = placeY;
+        builderLayer = baseZ;
+    }
+    else
+    {
+        if (activePlanetState->getBlock (target.hitX, target.hitY, target.hitZ) == 0)
+            return;
+
+        if (target.hitZ == 0)
+            return;
+
+        activePlanetState->setBlock (target.hitX, target.hitY, target.hitZ, 0);
+
+        builderCursorX = target.hitX;
+        builderCursorY = target.hitY;
+        builderLayer = target.hitZ;
+    }
+
+    saveActivePlanet();
+    syncCursorToFirstPersonTarget();
+    repaint();
+}
+
+void GameComponent::updateFirstPersonMouseCapture()
+{
+    const bool shouldCapture = currentScene == Scene::builder
+                            && builderViewMode == BuilderViewMode::firstPerson
+                            && ! performanceMode;
+    setMouseCursor (shouldCapture ? juce::MouseCursor::NoCursor : juce::MouseCursor::NormalCursor);
+    firstPersonCursorCaptured = shouldCapture;
+    hasMouseAnchor = false;
+    suppressNextMouseMove = shouldCapture;
+
+    if (shouldCapture)
+        recenterFirstPersonMouse();
+}
+
+void GameComponent::recenterFirstPersonMouse()
+{
+    if (! isShowing())
+        return;
+
+    const auto centre = getLocalBounds().getCentre().toFloat();
+    const auto screen = localPointToGlobal (centre).toFloat();
+    auto mouse = juce::Desktop::getInstance().getMainMouseSource();
+    mouse.setScreenPosition (screen);
+    lastMousePosition = centre;
+}
+
+juce::String GameComponent::getSceneTitle() const
+{
+    switch (currentScene)
+    {
+        case Scene::title:   return "Title Screen";
+        case Scene::galaxy:  return "Galaxy Navigation";
+        case Scene::landing: return "Orbital Landing";
+        case Scene::builder: return builderViewMode == BuilderViewMode::firstPerson ? "First-Person Builder" : "Isometric Build Board";
+    }
+
+    return {};
+}
+
+juce::String GameComponent::getBuilderViewName() const
+{
+    return builderViewMode == BuilderViewMode::firstPerson ? "The War Below First Person" : "Reference Isometric";
+}
+
+juce::Rectangle<float> GameComponent::titleCardBounds (juce::Rectangle<float> area) const
+{
+    return area.withSizeKeepingCentre (900.0f, 400.0f).translated (0.0f, -16.0f);
+}
+
+juce::Rectangle<float> GameComponent::titleButtonBounds (juce::Rectangle<float> area, int index) const
+{
+    auto row = titleCardBounds (area).reduced (34.0f, 28.0f);
+    row.removeFromTop (206.0f);
+    const float gap = 18.0f;
+    const float buttonWidth = (row.getWidth() - gap * 2.0f) / 3.0f;
+    row.removeFromLeft ((buttonWidth + gap) * static_cast<float> (index));
+    return row.removeFromLeft (buttonWidth).removeFromTop (110.0f);
+}
+
+GameComponent::TitleAction GameComponent::titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const
+{
+    for (int i = 0; i < 3; ++i)
+        if (titleButtonBounds (area, i).contains (position))
+            return static_cast<TitleAction> (i + 1);
+
+    return TitleAction::none;
+}
+
+juce::String GameComponent::titleActionLabel (TitleAction action) const
+{
+    switch (action)
+    {
+        case TitleAction::beginVoyage: return "BEGIN";
+        case TitleAction::regenerateGalaxy: return "NEW";
+        case TitleAction::descend: return "DESCEND";
+        case TitleAction::none: break;
+    }
+
+    return {};
+}
+
+void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
+{
+    if (regenerateGalaxy)
+    {
+        galaxy = GalaxyGenerator::generateGalaxy (juce::Random::getSystemRandom().nextInt());
+        selectedSystemIndex = 0;
+        selectedPlanetIndex = 0;
+        activePlanetState.reset();
+    }
+
+    hoveredTitleAction = TitleAction::none;
+    setScene (Scene::galaxy);
+}
+
+void GameComponent::drawHeader (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    juce::ColourGradient titleGlow (juce::Colour (0x90ffd6a1), static_cast<float> (area.getCentreX()), static_cast<float> (area.getY()),
+                                    juce::Colour (0x00ffd6a1), static_cast<float> (area.getCentreX()), static_cast<float> (area.getBottom()), false);
+    g.setGradientFill (titleGlow);
+    g.fillRect (area);
+
+    g.setColour (warmInk());
+    g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
+    g.drawText ("KlangKunst Galaxy", area.removeFromTop (34), juce::Justification::centredTop);
+
+    g.setColour (mutedText());
+    g.setFont (16.0f);
+    g.drawText (getSceneTitle() + "  |  " + getSelectedSystem().name + " / " + getSelectedPlanet().name,
+                area, juce::Justification::centred);
+}
+
+void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto card = titleCardBounds (area.toFloat()).withHeight (486.0f).translated (0.0f, 14.0f);
+
+    juce::ColourGradient sky (juce::Colour::fromRGB (48, 146, 255),
+                              area.getCentreX(), static_cast<float> (area.getY()),
+                              juce::Colour::fromRGB (22, 82, 198),
+                              area.getCentreX(), static_cast<float> (area.getBottom()),
+                              false);
+    g.setGradientFill (sky);
+    g.fillRoundedRectangle (card.expanded (30.0f, 24.0f), 44.0f);
+    juce::ColourGradient skyGloss (juce::Colour::fromRGBA (255, 255, 255, 118),
+                                   card.getCentreX(), card.getY() - 12.0f,
+                                   juce::Colour::fromRGBA (255, 255, 255, 0),
+                                   card.getCentreX(), card.getY() + 150.0f,
+                                   false);
+    g.setGradientFill (skyGloss);
+    g.fillRoundedRectangle (card.expanded (30.0f, 24.0f).withHeight (174.0f), 44.0f);
+
+    auto drawCloud = [&] (juce::Point<float> centre, float cloudScale)
+    {
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 66));
+        g.fillEllipse (juce::Rectangle<float> (72.0f * cloudScale, 42.0f * cloudScale).withCentre ({ centre.x - 26.0f * cloudScale, centre.y }));
+        g.fillEllipse (juce::Rectangle<float> (86.0f * cloudScale, 52.0f * cloudScale).withCentre (centre));
+        g.fillEllipse (juce::Rectangle<float> (66.0f * cloudScale, 38.0f * cloudScale).withCentre ({ centre.x + 34.0f * cloudScale, centre.y + 3.0f * cloudScale }));
+    };
+    drawCloud ({ card.getX() + 150.0f, card.getY() + 62.0f }, 1.0f);
+    drawCloud ({ card.getRight() - 170.0f, card.getY() + 84.0f }, 0.86f);
+
+    g.setColour (juce::Colour::fromRGBA (255, 214, 88, 104));
+    g.fillEllipse (juce::Rectangle<float> (140.0f, 140.0f).withCentre ({ card.getRight() - 120.0f, card.getY() + 88.0f }));
+
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 28));
+    g.fillRoundedRectangle (card.expanded (24.0f, 18.0f), 40.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
+    g.fillRoundedRectangle (card.expanded (10.0f, 8.0f).withHeight (32.0f).translated (0.0f, 6.0f), 18.0f);
+
+    juce::ColourGradient fill (juce::Colour::fromRGBA (255, 244, 220, 244),
+                               card.getCentreX(), card.getY(),
+                               juce::Colour::fromRGBA (255, 224, 170, 236),
+                               card.getCentreX(), card.getBottom(),
+                               false);
+    g.setGradientFill (fill);
+    g.fillRoundedRectangle (card, 32.0f);
+    g.setColour (juce::Colour::fromRGBA (142, 76, 38, 210));
+    g.drawRoundedRectangle (card, 32.0f, 2.4f);
+    juce::ColourGradient cardGloss (juce::Colour::fromRGBA (255, 255, 255, 126),
+                                    card.getCentreX(), card.getY() + 6.0f,
+                                    juce::Colour::fromRGBA (255, 255, 255, 0),
+                                    card.getCentreX(), card.getY() + 190.0f,
+                                    false);
+    g.setGradientFill (cardGloss);
+    g.fillRoundedRectangle (card.withHeight (198.0f).reduced (8.0f, 8.0f), 24.0f);
+    juce::Path diagonalSheen;
+    diagonalSheen.startNewSubPath (card.getX() + 34.0f, card.getY() + 34.0f);
+    diagonalSheen.lineTo (card.getX() + 240.0f, card.getY() + 34.0f);
+    diagonalSheen.lineTo (card.getX() + 84.0f, card.getY() + 214.0f);
+    diagonalSheen.lineTo (card.getX() + 12.0f, card.getY() + 214.0f);
+    diagonalSheen.closeSubPath();
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 46));
+    g.fillPath (diagonalSheen);
+
+    auto inner = card.reduced (34.0f, 28.0f);
+    auto topRow = inner.removeFromTop (156.0f);
+    inner.removeFromTop (18.0f);
+    auto actionsRow = inner.removeFromTop (126.0f);
+    inner.removeFromTop (16.0f);
+    auto hintArea = inner.removeFromTop (28.0f);
+
+    auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.53f);
+    topRow.removeFromLeft (18.0f);
+    auto rightStory = topRow;
+
+    auto titleArea = leftHero.removeFromTop (66.0f);
+    auto subtitleArea = leftHero.removeFromTop (62.0f);
+    leftHero.removeFromTop (30.0f);
+
+    auto titleShadow = titleArea.translated (0.0f, 4.0f);
+    g.setColour (juce::Colour::fromRGBA (124, 56, 34, 188));
+    g.setFont (juce::FontOptions (52.0f));
+    g.drawText ("KlangKunstGalaxy", titleShadow.toNearestInt(), juce::Justification::centredLeft);
+    g.setColour (juce::Colour::fromRGB (214, 54, 54));
+    g.setFont (juce::FontOptions (52.0f));
+    g.drawText ("KlangKunstGalaxy", titleArea.toNearestInt(), juce::Justification::centredLeft);
+    g.setColour (juce::Colour::fromRGBA (255, 238, 214, 120));
+    g.fillRoundedRectangle (titleArea.withHeight (16.0f).withTrimmedLeft (8.0f).withTrimmedRight (titleArea.getWidth() * 0.28f), 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 104));
+    g.fillRoundedRectangle (titleArea.withHeight (10.0f).withTrimmedLeft (26.0f).withTrimmedRight (titleArea.getWidth() * 0.42f).translated (0.0f, 8.0f), 6.0f);
+
+    g.setColour (juce::Colour::fromRGBA (96, 60, 44, 236));
+    g.setFont (juce::FontOptions (17.5f));
+    g.drawFittedText ("Part instrument, part star atlas, part architectural sandbox. Explore a seeded galaxy, descend onto a planet, and build persistent musical worlds block by block.",
+                      subtitleArea.toNearestInt(),
+                      juce::Justification::topLeft,
+                      3);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        const float t = static_cast<float> (i) / 4.0f;
+        auto sparkle = juce::Rectangle<float> (10.0f + 3.0f * (i % 2), 10.0f + 3.0f * (i % 2))
+                           .withCentre ({ leftHero.getX() + 28.0f + t * 250.0f,
+                                          titleArea.getBottom() + 16.0f + std::sin (t * 6.28f) * 6.0f });
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
+        g.fillEllipse (sparkle);
+    }
+
+    g.setColour (juce::Colour::fromRGBA (96, 172, 84, 228));
+    g.fillRoundedRectangle (rightStory, 22.0f);
+    g.setColour (juce::Colour::fromRGBA (72, 124, 58, 188));
+    g.drawRoundedRectangle (rightStory, 22.0f, 1.8f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
+    g.fillRoundedRectangle (rightStory.withHeight (18.0f).reduced (10.0f, 2.0f), 10.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.fillRoundedRectangle (rightStory.reduced (10.0f, 12.0f).withHeight (44.0f), 18.0f);
+
+    auto storyInner = rightStory.reduced (18.0f, 16.0f);
+    auto boardArea = storyInner.removeFromTop (96.0f);
+    storyInner.removeFromTop (12.0f);
+    auto stepsArea = storyInner;
+
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 54));
+    g.fillEllipse (boardArea.expanded (0.0f, 22.0f));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 26));
+    g.fillEllipse (boardArea.expanded (-24.0f, 2.0f).translated (0.0f, -6.0f));
+
+    auto boardRect = boardArea.withSizeKeepingCentre (186.0f, 96.0f);
+    juce::Path isoBoard;
+    const auto a = juce::Point<float> (boardRect.getCentreX(), boardRect.getY());
+    const auto b = juce::Point<float> (boardRect.getRight(), boardRect.getCentreY());
+    const auto c = juce::Point<float> (boardRect.getCentreX(), boardRect.getBottom());
+    const auto d = juce::Point<float> (boardRect.getX(), boardRect.getCentreY());
+    isoBoard.startNewSubPath (a);
+    isoBoard.lineTo (b);
+    isoBoard.lineTo (c);
+    isoBoard.lineTo (d);
+    isoBoard.closeSubPath();
+    g.setColour (juce::Colour::fromRGBA (54, 102, 46, 236));
+    g.fillPath (isoBoard);
+    g.setColour (juce::Colour::fromRGBA (72, 124, 58, 188));
+    g.strokePath (isoBoard, juce::PathStrokeType (2.0f));
+    juce::Path boardSheen;
+    boardSheen.startNewSubPath ({ boardRect.getCentreX(), boardRect.getY() + 6.0f });
+    boardSheen.lineTo ({ boardRect.getCentreX() + boardRect.getWidth() * 0.24f, boardRect.getCentreY() - 2.0f });
+    boardSheen.lineTo ({ boardRect.getCentreX() - boardRect.getWidth() * 0.10f, boardRect.getCentreY() - 2.0f });
+    boardSheen.lineTo ({ boardRect.getCentreX() - boardRect.getWidth() * 0.24f, boardRect.getY() + 18.0f });
+    boardSheen.closeSubPath();
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 58));
+    g.fillPath (boardSheen);
+    juce::Path boardGloss;
+    boardGloss.startNewSubPath (boardRect.getCentreX() - boardRect.getWidth() * 0.20f, boardRect.getY() + 16.0f);
+    boardGloss.lineTo (boardRect.getCentreX() + boardRect.getWidth() * 0.04f, boardRect.getY() + 16.0f);
+    boardGloss.lineTo (boardRect.getCentreX() - boardRect.getWidth() * 0.10f, boardRect.getCentreY() - 4.0f);
+    boardGloss.lineTo (boardRect.getCentreX() - boardRect.getWidth() * 0.28f, boardRect.getCentreY() - 4.0f);
+    boardGloss.closeSubPath();
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
+    g.fillPath (boardGloss);
+    for (int i = 1; i <= 3; ++i)
+    {
+        const float t = static_cast<float> (i) / 4.0f;
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 36));
+        g.drawLine (juce::Line<float> ({ juce::jmap (t, d.x, a.x), juce::jmap (t, d.y, a.y) },
+                                       { juce::jmap (t, c.x, b.x), juce::jmap (t, c.y, b.y) }),
+                    1.0f);
+        g.drawLine (juce::Line<float> ({ juce::jmap (t, a.x, b.x), juce::jmap (t, a.y, b.y) },
+                                       { juce::jmap (t, d.x, c.x), juce::jmap (t, d.y, c.y) }),
+                    1.0f);
+    }
+
+    auto drawMiniBlock = [&] (juce::Point<float> centre, juce::Colour colour)
+    {
+        const float w = 24.0f;
+        const float h = 12.0f;
+        const float rise = 22.0f;
+        juce::Path top;
+        top.startNewSubPath (centre.x, centre.y - rise);
+        top.lineTo (centre.x + w * 0.5f, centre.y - rise + h * 0.5f);
+        top.lineTo (centre.x, centre.y - rise + h);
+        top.lineTo (centre.x - w * 0.5f, centre.y - rise + h * 0.5f);
+        top.closeSubPath();
+        juce::Path left;
+        left.startNewSubPath (centre.x - w * 0.5f, centre.y - rise + h * 0.5f);
+        left.lineTo (centre.x, centre.y - rise + h);
+        left.lineTo (centre.x, centre.y);
+        left.lineTo (centre.x - w * 0.5f, centre.y - h * 0.5f);
+        left.closeSubPath();
+        juce::Path right;
+        right.startNewSubPath (centre.x + w * 0.5f, centre.y - rise + h * 0.5f);
+        right.lineTo (centre.x, centre.y - rise + h);
+        right.lineTo (centre.x, centre.y);
+        right.lineTo (centre.x + w * 0.5f, centre.y - h * 0.5f);
+        right.closeSubPath();
+        g.setColour (colour.withMultipliedBrightness (1.12f));
+        g.fillPath (top);
+        g.setColour (colour.withMultipliedBrightness (0.86f));
+        g.fillPath (left);
+        g.setColour (colour.withMultipliedBrightness (0.72f));
+        g.fillPath (right);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
+        g.strokePath (top, juce::PathStrokeType (1.0f));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
+        g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre ({ centre.x - 3.0f, centre.y - rise + 7.0f }));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
+        g.fillRoundedRectangle (juce::Rectangle<float> (w * 0.28f, 4.0f).withCentre ({ centre.x - 2.0f, centre.y - rise + 8.0f }), 2.0f);
+    };
+    drawMiniBlock ({ boardRect.getCentreX() - 42.0f, boardRect.getCentreY() + 24.0f }, juce::Colour::fromRGB (255, 204, 78));
+    drawMiniBlock ({ boardRect.getCentreX() - 8.0f, boardRect.getCentreY() + 4.0f }, juce::Colour::fromRGB (226, 78, 62));
+    drawMiniBlock ({ boardRect.getCentreX() + 28.0f, boardRect.getCentreY() + 20.0f }, juce::Colour::fromRGB (90, 188, 88));
+    drawMiniBlock ({ boardRect.getCentreX() + 58.0f, boardRect.getCentreY() - 8.0f }, juce::Colour::fromRGB (88, 176, 250));
+
+    auto groundStrip = juce::Rectangle<float> (boardRect.getX() - 12.0f, boardRect.getBottom() + 8.0f, boardRect.getWidth() + 24.0f, 16.0f);
+    g.setColour (juce::Colour::fromRGBA (142, 94, 48, 188));
+    g.fillRoundedRectangle (groundStrip, 8.0f);
+    for (int i = 0; i < 8; ++i)
+    {
+        auto brick = juce::Rectangle<float> (groundStrip.getX() + i * groundStrip.getWidth() / 8.0f,
+                                             groundStrip.getY(),
+                                             groundStrip.getWidth() / 8.0f - 2.0f,
+                                             groundStrip.getHeight());
+        g.setColour ((i % 2) == 0 ? juce::Colour::fromRGBA (188, 126, 70, 180)
+                                  : juce::Colour::fromRGBA (166, 108, 58, 180));
+        g.fillRoundedRectangle (brick, 4.0f);
+    }
+
+    auto drawStep = [&] (juce::Rectangle<float> bounds, const juce::String& num, const juce::String& label, const juce::String& desc)
+    {
+        g.setColour (juce::Colour::fromRGBA (255, 248, 232, 214));
+        g.fillRoundedRectangle (bounds, 16.0f);
+        g.setColour (juce::Colour::fromRGBA (144, 86, 44, 122));
+        g.drawRoundedRectangle (bounds, 16.0f, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 68));
+        g.fillRoundedRectangle (bounds.reduced (8.0f, 6.0f).withHeight (16.0f), 8.0f);
+        auto numBubble = bounds.removeFromLeft (44.0f).reduced (4.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 92, 74, 220));
+        g.fillRoundedRectangle (numBubble, 12.0f);
+        g.setColour (juce::Colour::fromRGBA (124, 42, 30, 150));
+        g.drawRoundedRectangle (numBubble, 12.0f, 1.2f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
+        g.fillRoundedRectangle (numBubble.reduced (5.0f, 4.0f).withHeight (8.0f), 6.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (16.0f));
+        g.drawText (num, numBubble.toNearestInt(), juce::Justification::centred);
+        auto textArea = bounds.reduced (12.0f, 8.0f);
+        g.setColour (juce::Colour::fromRGBA (110, 64, 40, 244));
+        g.setFont (juce::FontOptions (16.0f));
+        g.drawText (label, textArea.removeFromTop (20.0f).toNearestInt(), juce::Justification::centredLeft);
+        g.setColour (juce::Colour::fromRGBA (122, 86, 56, 216));
+        g.setFont (juce::FontOptions (13.5f));
+        g.drawFittedText (desc, textArea.toNearestInt(), juce::Justification::topLeft, 2);
+    };
+    const float stepGap = 10.0f;
+    const float stepHeight = (stepsArea.getHeight() - stepGap * 2.0f) / 3.0f;
+    drawStep (stepsArea.removeFromTop (stepHeight), "1", "Chart the galaxy", "Generate a seeded starfield and travel system to system through lightweight musical metadata.");
+    stepsArea.removeFromTop (stepGap);
+    drawStep (stepsArea.removeFromTop (stepHeight), "2", "Descend to a planet", "Cut from orbit into a persistent planet surface that only materialises when you land.");
+    stepsArea.removeFromTop (stepGap);
+    drawStep (stepsArea.removeFromTop (stepHeight), "3", "Build the world", "Shape the empty voxel surface into a musical planet and leave it changed when you return to space.");
+
+    const float buttonGap = 18.0f;
+    const float buttonWidth = (actionsRow.getWidth() - buttonGap * 2.0f) / 3.0f;
+    const std::array<TitleAction, 3> actions { TitleAction::beginVoyage, TitleAction::regenerateGalaxy, TitleAction::descend };
+    const std::array<juce::String, 3> captions {
+        "Enter the current seeded galaxy and start navigating star systems",
+        "Generate a fresh galaxy seed and restart the voyage from a new atlas",
+        "Jump straight to the currently selected planet and enter landing approach"
+    };
+    for (size_t i = 0; i < actions.size(); ++i)
+    {
+        auto button = actionsRow.removeFromLeft (buttonWidth);
+        if (i + 1 < actions.size())
+            actionsRow.removeFromLeft (buttonGap);
+        const bool hovered = hoveredTitleAction == actions[i];
+        const float pulse = hovered ? (0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.006))) : 0.0f;
+        const float lift = hovered ? -4.0f : 0.0f;
+        button = button.translated (0.0f, lift);
+        g.setColour (juce::Colour::fromRGBA (112, 56, 36, hovered ? 118 : 74));
+        g.fillRoundedRectangle (button.translated (0.0f, 6.0f), 22.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 44 : 28));
+        g.fillRoundedRectangle (button.translated (0.0f, 2.0f), 22.0f);
+        juce::ColourGradient buttonFill (hovered ? juce::Colour::fromRGBA (255, 120, 86, 248)
+                                                 : juce::Colour::fromRGBA (232, 86, 68, 234),
+                                         button.getCentreX(), button.getY(),
+                                         hovered ? juce::Colour::fromRGBA (214, 52, 42, 246)
+                                                 : juce::Colour::fromRGBA (186, 46, 42, 228),
+                                         button.getCentreX(), button.getBottom(),
+                                         false);
+        g.setGradientFill (buttonFill);
+        g.fillRoundedRectangle (button, 22.0f);
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 232, 164, static_cast<uint8_t> (188 + 34 * pulse))
+                             : juce::Colour::fromRGBA (124, 42, 30, 138));
+        g.drawRoundedRectangle (button, 22.0f, hovered ? 2.6f : 1.4f);
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 184, 116, static_cast<uint8_t> (50 + 28 * pulse))
+                             : juce::Colour::fromRGBA (255, 136, 94, 42));
+        g.fillRoundedRectangle (button.reduced (5.0f, 5.0f), 18.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 78 : 52));
+        g.fillRoundedRectangle (button.withHeight (18.0f).reduced (12.0f, 4.0f), 10.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 122 : 84));
+        g.fillRoundedRectangle (button.reduced (16.0f, 12.0f).withHeight (14.0f), 7.0f);
+        juce::Path buttonSweep;
+        buttonSweep.startNewSubPath (button.getX() + 18.0f, button.getY() + 20.0f);
+        buttonSweep.lineTo (button.getX() + button.getWidth() * 0.58f, button.getY() + 20.0f);
+        buttonSweep.lineTo (button.getX() + button.getWidth() * 0.38f, button.getY() + button.getHeight() - 20.0f);
+        buttonSweep.lineTo (button.getX() + 8.0f, button.getY() + button.getHeight() - 20.0f);
+        buttonSweep.closeSubPath();
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 56 : 34));
+        g.fillPath (buttonSweep);
+        auto buttonInner = button.reduced (20.0f, 16.0f);
+        auto topStrip = buttonInner.removeFromTop (22.0f);
+        auto actionTag = topStrip.removeFromLeft (56.0f);
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 222, 152, 118)
+                             : juce::Colour::fromRGBA (255, 214, 146, 76));
+        g.fillRoundedRectangle (actionTag, 11.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawText ("STEP", actionTag.toNearestInt(), juce::Justification::centred);
+        buttonInner.removeFromTop (8.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (23.0f));
+        g.drawText (titleActionLabel (actions[i]), buttonInner.removeFromTop (30.0f).toNearestInt(), juce::Justification::centredLeft);
+        g.setColour (juce::Colour::fromRGBA (255, 236, 212, 218));
+        g.setFont (juce::FontOptions (14.5f));
+        g.drawFittedText (captions[i], buttonInner.toNearestInt(), juce::Justification::topLeft, 3);
+    }
+
+    auto footerCloud = hintArea.withTrimmedTop (4.0f).reduced (40.0f, 0.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 104));
+    g.fillRoundedRectangle (footerCloud, 14.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 56));
+    g.fillRoundedRectangle (footerCloud.withHeight (10.0f).reduced (14.0f, 1.0f), 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 74));
+    g.fillRoundedRectangle (footerCloud.reduced (18.0f, 6.0f).withHeight (8.0f), 6.0f);
+    g.setColour (juce::Colour::fromRGBA (106, 66, 42, 220));
+    g.setFont (juce::FontOptions (13.0f));
+    g.drawText ("Enter or N begins   R makes a new galaxy   D descends to the selected planet",
+                footerCloud.toNearestInt(),
+                juce::Justification::centred);
+}
+
+void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto mapArea = area.removeFromLeft (area.proportionOfWidth (0.57f)).reduced (10);
+    auto sideArea = area.reduced (10);
+    const float uiScale = juce::jlimit (0.82f, 1.0f,
+                                        juce::jmin (sideArea.getWidth() / 700.0f,
+                                                    sideArea.getHeight() / 860.0f));
+
+    auto drawReferencePanel = [&] (juce::Rectangle<int> bounds)
+    {
+        drawPanel (g, bounds, juce::Colour::fromRGB (92, 190, 255));
+    };
+
+    drawReferencePanel (mapArea);
+    drawReferencePanel (sideArea);
+
+    auto mapFloat = mapArea.toFloat();
+    juce::ColourGradient mapWash (juce::Colour::fromRGBA (26, 42, 96, 178),
+                                  mapFloat.getX(), mapFloat.getY(),
+                                  juce::Colour::fromRGBA (8, 16, 46, 34),
+                                  mapFloat.getRight(), mapFloat.getBottom(),
+                                  false);
+    mapWash.addColour (0.40, juce::Colour::fromRGBA (24, 88, 188, 74));
+    g.setGradientFill (mapWash);
+    g.fillRoundedRectangle (mapFloat.reduced (8.0f), 18.0f);
+
+    fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.4f,
+                                         mapArea.getY() + mapArea.getHeight() * 0.1f,
+                                         mapArea.getWidth() * 0.42f,
+                                         mapArea.getHeight() * 0.42f),
+              juce::Colour (0xffffc16f), 0.20f);
+
+    fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.10f,
+                                         mapArea.getY() + mapArea.getHeight() * 0.44f,
+                                         mapArea.getWidth() * 0.50f,
+                                         mapArea.getHeight() * 0.34f),
+              juce::Colour::fromRGB (92, 176, 255), 0.14f);
+    fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.52f,
+                                         mapArea.getY() + mapArea.getHeight() * 0.28f,
+                                         mapArea.getWidth() * 0.26f,
+                                         mapArea.getHeight() * 0.24f),
+              juce::Colour::fromRGB (255, 112, 164), 0.10f);
+
+    juce::Path constellationLines;
+    for (int i = 0; i < galaxy.systems.size(); ++i)
+    {
+        const auto& system = *galaxy.systems.getUnchecked (i);
+        const auto x = static_cast<float> (mapArea.getX()) + system.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+        const auto y = static_cast<float> (mapArea.getY()) + system.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+
+        float nearestDistance = std::numeric_limits<float>::max();
+        juce::Point<float> nearestPoint;
+        bool foundNeighbour = false;
+
+        for (int j = 0; j < galaxy.systems.size(); ++j)
+        {
+            if (i == j)
+                continue;
+
+            const auto& other = *galaxy.systems.getUnchecked (j);
+            const auto ox = static_cast<float> (mapArea.getX()) + other.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+            const auto oy = static_cast<float> (mapArea.getY()) + other.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+            const float dx = ox - x;
+            const float dy = oy - y;
+            const float distance = std::sqrt (dx * dx + dy * dy);
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearestPoint = { ox, oy };
+                foundNeighbour = true;
+            }
+        }
+
+        if (foundNeighbour && nearestDistance < mapArea.getWidth() * 0.26f)
+        {
+            constellationLines.startNewSubPath (x, y);
+            constellationLines.lineTo (nearestPoint);
+        }
+    }
+    g.setColour (juce::Colour::fromRGBA (124, 196, 255, 30));
+    g.strokePath (constellationLines, juce::PathStrokeType (1.0f));
+
+    juce::Random starDust (0x4B4C414E);
+    for (int i = 0; i < 90; ++i)
+    {
+        const float x = mapFloat.getX() + starDust.nextFloat() * mapFloat.getWidth();
+        const float y = mapFloat.getY() + starDust.nextFloat() * mapFloat.getHeight();
+        const float size = 1.0f + starDust.nextFloat() * 2.4f;
+        const auto colour = juce::Colour::fromHSV (0.52f + starDust.nextFloat() * 0.18f,
+                                                   0.25f + starDust.nextFloat() * 0.30f,
+                                                   0.75f + starDust.nextFloat() * 0.25f,
+                                                   0.20f + starDust.nextFloat() * 0.35f);
+        g.setColour (colour);
+        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, y }));
+    }
+
+    for (int i = 0; i < galaxy.systems.size(); ++i)
+    {
+        const auto& system = *galaxy.systems.getUnchecked (i);
+        const auto x = mapArea.getX() + static_cast<int> (system.galaxyPosition.x * static_cast<float> (mapArea.getWidth()));
+        const auto y = mapArea.getY() + static_cast<int> (system.galaxyPosition.y * static_cast<float> (mapArea.getHeight()));
+        const auto selected = i == selectedSystemIndex;
+        const auto systemColour = system.planets[0]->accent
+                                      .interpolatedWith (juce::Colour::fromRGB (120, 210, 255), 0.18f)
+                                      .brighter (0.25f);
+
+        fillGlow (g, juce::Rectangle<float> (static_cast<float> (x - 22), static_cast<float> (y - 22), 44.0f, 44.0f),
+                  selected ? juce::Colour (0xffffe3ae) : systemColour, selected ? 0.48f : 0.24f);
+        fillGlow (g, juce::Rectangle<float> (static_cast<float> (x - 10), static_cast<float> (y - 10), 20.0f, 20.0f),
+                  selected ? juce::Colour (0xffffffff) : systemColour.brighter (0.4f), selected ? 0.22f : 0.10f);
+        g.setColour (selected ? juce::Colour (0xfffff7e2) : systemColour.interpolatedWith (juce::Colour (0xfff8f0ff), 0.22f));
+        g.fillEllipse (static_cast<float> (x - (selected ? 7 : 4)),
+                       static_cast<float> (y - (selected ? 7 : 4)),
+                       static_cast<float> (selected ? 14 : 8),
+                       static_cast<float> (selected ? 14 : 8));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, selected ? 224 : 132));
+        g.fillEllipse (static_cast<float> (x - (selected ? 2.4f : 1.6f)),
+                       static_cast<float> (y - (selected ? 2.4f : 1.6f)),
+                       static_cast<float> (selected ? 4.8f : 3.2f),
+                       static_cast<float> (selected ? 4.8f : 3.2f));
+
+        if (selected)
+        {
+            g.setColour (juce::Colour (0xa0fff0d4));
+            g.drawEllipse (static_cast<float> (x - 12), static_cast<float> (y - 12), 24.0f, 24.0f, 1.5f);
+            g.setColour (juce::Colour::fromRGBA (255, 246, 214, 86));
+            g.drawEllipse (static_cast<float> (x - 18), static_cast<float> (y - 18), 36.0f, 36.0f, 1.2f);
+        }
+    }
+
+    const auto& system = getSelectedSystem();
+    auto inner = sideArea.toFloat().reduced (16.0f * uiScale, 16.0f * uiScale);
+    auto topRow = inner.removeFromTop (44.0f * uiScale);
+    auto modePill = topRow.removeFromLeft (topRow.getWidth() * 0.36f);
+    topRow.removeFromLeft (10.0f * uiScale);
+    auto slabChip = topRow;
+
+    g.setColour (juce::Colour::fromRGBA (34, 62, 96, 244));
+    g.fillRoundedRectangle (modePill, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.fillRoundedRectangle (modePill.reduced (3.0f, 3.0f).withHeight (modePill.getHeight() * 0.38f), 4.0f);
+    g.setColour (juce::Colour::fromRGBA (126, 240, 255, 200));
+    g.drawRoundedRectangle (modePill, 8.0f, 1.6f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (13.5f * uiScale));
+    g.drawFittedText ("BUILD MODE", modePill.reduced (10.0f, 0.0f).toNearestInt(), juce::Justification::centred, 1);
+
+    g.setColour (juce::Colour::fromRGBA (15, 26, 62, 238));
+    g.fillRoundedRectangle (slabChip, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
+    g.fillRoundedRectangle (slabChip.reduced (3.0f, 3.0f).withHeight (slabChip.getHeight() * 0.28f), 4.0f);
+    g.setColour (juce::Colour::fromRGBA (90, 176, 255, 112));
+    g.drawRoundedRectangle (slabChip, 8.0f, 1.2f);
+    g.setColour (juce::Colour::fromRGBA (198, 228, 255, 222));
+    g.setFont (juce::FontOptions (12.5f * uiScale));
+    g.drawFittedText ("GALAXY  " + galaxy.name.toUpperCase(),
+                      slabChip.reduced (14.0f, 0.0f).toNearestInt(),
+                      juce::Justification::centredLeft, 1);
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto detailChip = inner.removeFromTop (56.0f * uiScale);
+    g.setColour (juce::Colour::fromRGBA (12, 22, 52, 210));
+    g.fillRoundedRectangle (detailChip, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (102, 182, 255, 46));
+    g.drawRoundedRectangle (detailChip, 8.0f, 1.1f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (12.0f * uiScale));
+    g.drawFittedText ("Arrows select systems and planets   Enter lands   Metadata stays lightweight until descent",
+                      detailChip.reduced (14.0f, 6.0f).toNearestInt(),
+                      juce::Justification::centredLeft, 2);
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto drawStat = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
+    {
+        g.setColour (juce::Colour::fromRGBA (12, 22, 52, 210));
+        g.fillRoundedRectangle (bounds, 7.0f);
+        g.setColour (juce::Colour::fromRGBA (102, 182, 255, 46));
+        g.drawRoundedRectangle (bounds, 7.0f, 1.1f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
+        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.24f), 3.0f);
+        auto statInner = bounds.reduced (10.0f * uiScale, 5.0f * uiScale);
+        g.setColour (juce::Colour::fromRGBA (152, 216, 255, 170));
+        g.setFont (juce::FontOptions (10.0f * uiScale));
+        g.drawFittedText (label, statInner.removeFromTop (12.0f).toNearestInt(), juce::Justification::centredLeft, 1);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (13.0f * uiScale));
+        g.drawFittedText (value, statInner.toNearestInt(), juce::Justification::centredLeft, 1);
+    };
+
+    const float statGap = 10.0f * uiScale;
+    auto statRowA = inner.removeFromTop (54.0f * uiScale);
+    const float statWidthA = (statRowA.getWidth() - statGap * 2.0f) / 3.0f;
+    drawStat (statRowA.removeFromLeft (statWidthA), "SYSTEM", juce::String (selectedSystemIndex + 1) + "/" + juce::String (galaxy.systems.size()));
+    statRowA.removeFromLeft (statGap);
+    drawStat (statRowA.removeFromLeft (statWidthA), "PLANET", juce::String (selectedPlanetIndex + 1) + "/" + juce::String (system.planets.size()));
+    statRowA.removeFromLeft (statGap);
+    drawStat (statRowA.removeFromLeft (statWidthA), "KEY", getNoteNameForLayer (1));
+
+    inner.removeFromTop (8.0f * uiScale);
+    auto statRowB = inner.removeFromTop (54.0f * uiScale);
+    const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
+    drawStat (statRowB.removeFromLeft (statWidthB), "SCALE", "Chromatic");
+    statRowB.removeFromLeft (statGap);
+    drawStat (statRowB.removeFromLeft (statWidthB), "SYNTH", "Atlas");
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto drawChip = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
+    {
+        g.setColour (juce::Colour::fromRGBA (11, 20, 46, 208));
+        g.fillRoundedRectangle (bounds, 7.0f);
+        g.setColour (juce::Colour::fromRGBA (96, 184, 255, 46));
+        g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 16));
+        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.20f), 3.0f);
+        auto textArea = bounds.reduced (11.0f * uiScale, 0.0f);
+        auto labelArea = textArea.removeFromLeft (juce::jmin (84.0f, bounds.getWidth() * 0.36f));
+        g.setColour (juce::Colour::fromRGBA (132, 196, 255, 166));
+        g.setFont (juce::FontOptions (11.0f * uiScale));
+        g.drawFittedText (label, labelArea.toNearestInt(), juce::Justification::centredLeft, 1);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (12.0f * uiScale));
+        g.drawFittedText (value, textArea.toNearestInt(), juce::Justification::centredLeft, 1);
+        g.setColour (juce::Colour::fromRGBA (84, 226, 255, 24));
+        g.fillRoundedRectangle (bounds.withTrimmedTop (bounds.getHeight() - 3.0f).reduced (1.0f, 0.0f), 6.0f);
+    };
+
+    const float gap = 10.0f * uiScale;
+    auto infoRowA = inner.removeFromTop (30.0f * uiScale);
+    const float chipW = (infoRowA.getWidth() - gap) / 2.0f;
+    drawChip (infoRowA.removeFromLeft (chipW), "Systems", juce::String (galaxy.systems.size()));
+    infoRowA.removeFromLeft (gap);
+    drawChip (infoRowA.removeFromLeft (chipW), "Planets", juce::String (system.planets.size()));
+
+    inner.removeFromTop (8.0f * uiScale);
+    auto infoRowB = inner.removeFromTop (30.0f * uiScale);
+    drawChip (infoRowB.removeFromLeft (chipW), "Orbit", juce::String (getSelectedPlanet().orbitIndex + 1));
+    infoRowB.removeFromLeft (gap);
+    drawChip (infoRowB.removeFromLeft (chipW), "Root", juce::String (getSelectedPlanet().musicalRootHz, 1) + " Hz");
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto listArea = inner.removeFromTop (juce::jmin (252.0f * uiScale, inner.getHeight() - 52.0f * uiScale));
+    for (int i = 0; i < system.planets.size(); ++i)
+    {
+        const auto& planet = *system.planets.getUnchecked (i);
+        auto row = listArea.removeFromTop (44.0f * uiScale);
+        g.setColour (i == selectedPlanetIndex ? juce::Colour::fromRGBA (255, 168, 84, 72)
+                                              : juce::Colour::fromRGBA (12, 22, 52, 182));
+        g.fillRoundedRectangle (row, 8.0f);
+        g.setColour (i == selectedPlanetIndex ? juce::Colour::fromRGBA (255, 212, 140, 188)
+                                              : juce::Colour::fromRGBA (102, 182, 255, 38));
+        g.drawRoundedRectangle (row, 8.0f, i == selectedPlanetIndex ? 1.7f : 1.1f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, i == selectedPlanetIndex ? 24 : 12));
+        g.fillRoundedRectangle (row.reduced (3.0f, 3.0f).withHeight (row.getHeight() * 0.18f), 3.0f);
+        g.setColour (planet.accent);
+        g.fillEllipse (row.removeFromLeft (28.0f).reduced (4.0f));
+        auto text = row.reduced (8.0f * uiScale, 5.0f * uiScale);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (12.5f * uiScale));
+        g.drawFittedText (planet.name, text.removeFromTop (15.0f * uiScale).toNearestInt(), juce::Justification::centredLeft, 1);
+        g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
+        g.setFont (juce::FontOptions (11.0f * uiScale));
+        g.drawFittedText ("water " + juce::String (planet.water, 2) + "   energy " + juce::String (planet.energy, 2),
+                          text.toNearestInt(), juce::Justification::centredLeft, 1);
+        listArea.removeFromTop (6.0f * uiScale);
+    }
+
+    inner.removeFromTop (8.0f * uiScale);
+    auto footerRow = inner.removeFromTop (42.0f * uiScale);
+    g.setColour (juce::Colour::fromRGBA (12, 22, 52, 198));
+    g.fillRoundedRectangle (footerRow, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (102, 182, 255, 42));
+    g.drawRoundedRectangle (footerRow, 8.0f, 1.0f);
+    g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
+    g.setFont (juce::FontOptions (11.5f * uiScale));
+    g.drawFittedText ("Selected  " + system.name + " / " + getSelectedPlanet().name + "   Enter lands   surfaces generate on demand",
+                      footerRow.reduced (12.0f, 6.0f).toNearestInt(), juce::Justification::centredLeft, 2);
+}
+
+void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    ensureActivePlanetLoaded();
+    const auto& planet = getSelectedPlanet();
+
+    auto left = area.removeFromLeft (area.proportionOfWidth (0.50f)).reduced (8);
+    auto right = area.reduced (12);
+    const float uiScale = juce::jlimit (0.82f, 1.0f,
+                                        juce::jmin (right.getWidth() / 700.0f,
+                                                    right.getHeight() / 860.0f));
+
+    auto drawReferencePanel = [&] (juce::Rectangle<int> bounds)
+    {
+        auto panel = bounds.toFloat();
+        juce::ColourGradient hudGradient (juce::Colour::fromRGBA (11, 18, 44, 238),
+                                          panel.getX(), panel.getY(),
+                                          juce::Colour::fromRGBA (16, 28, 68, 228),
+                                          panel.getRight(), panel.getBottom(),
+                                          false);
+        hudGradient.addColour (0.38, juce::Colour::fromRGBA (34, 98, 198, 132));
+        g.setGradientFill (hudGradient);
+        g.fillRoundedRectangle (panel, 12.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 30));
+        g.fillRoundedRectangle (panel.reduced (4.0f, 4.0f).withHeight (panel.getHeight() * 0.16f), 6.0f);
+        g.setColour (juce::Colour::fromRGBA (118, 236, 255, 178));
+        g.drawRoundedRectangle (panel, 12.0f, 1.8f);
+        g.setColour (juce::Colour::fromRGBA (28, 54, 104, 255));
+        g.drawRoundedRectangle (panel.reduced (4.0f), 8.0f, 1.0f);
+    };
+
+    drawReferencePanel (left);
+    drawReferencePanel (right);
+
+    juce::ColourGradient sky (planet.accent.interpolatedWith (juce::Colour (0xffffc07b), 0.42f),
+                              left.getX() + left.getWidth() * 0.62f,
+                              static_cast<float> (left.getY()),
+                              juce::Colour (0xff040303),
+                              static_cast<float> (left.getX()),
+                              static_cast<float> (left.getBottom()),
+                              false);
+    sky.addColour (0.52, activePlanetState->skyColour.darker (0.55f));
+    g.setGradientFill (sky);
+    g.fillRoundedRectangle (left.toFloat(), 22.0f);
+
+    fillGlow (g, juce::Rectangle<float> (left.getX() + left.getWidth() * 0.48f,
+                                         left.getY() + 18.0f,
+                                         left.getWidth() * 0.44f,
+                                         left.getWidth() * 0.44f),
+              juce::Colour (0xffffd1a0), 0.36f);
+    g.setColour (planet.accent.interpolatedWith (juce::Colour (0xffffd09a), 0.45f));
+    g.fillEllipse (left.getCentreX() - 70.0f, left.getY() + 40.0f, 140.0f, 140.0f);
+
+    juce::Path ridge;
+    ridge.startNewSubPath (static_cast<float> (left.getX()), static_cast<float> (left.getBottom() - 110));
+    ridge.lineTo (left.getX() + left.getWidth() * 0.18f, left.getBottom() - 150.0f);
+    ridge.lineTo (left.getX() + left.getWidth() * 0.34f, left.getBottom() - 124.0f);
+    ridge.lineTo (left.getX() + left.getWidth() * 0.52f, left.getBottom() - 176.0f);
+    ridge.lineTo (left.getX() + left.getWidth() * 0.72f, left.getBottom() - 136.0f);
+    ridge.lineTo (static_cast<float> (left.getRight()), static_cast<float> (left.getBottom() - 164));
+    ridge.lineTo (static_cast<float> (left.getRight()), static_cast<float> (left.getBottom()));
+    ridge.lineTo (static_cast<float> (left.getX()), static_cast<float> (left.getBottom()));
+    ridge.closeSubPath();
+    g.setColour (juce::Colour (0xee050403));
+    g.fillPath (ridge);
+
+    g.setColour (juce::Colour (0x28ffdcb2));
+    g.strokePath (ridge, juce::PathStrokeType (1.2f), juce::AffineTransform::translation (0.0f, -2.0f));
+
+    g.setColour (juce::Colour (0x90000000));
+    g.fillRect (left.removeFromBottom (110));
+
+    g.setColour (warmInk());
+    g.setFont (24.0f);
+    g.drawText (planet.name + " approach", left.removeFromBottom (88), juce::Justification::centred);
+
+    g.setFont (16.0f);
+    g.drawText ("Surface voxels are now resident in memory and persistent on disk.",
+                left.removeFromBottom (40).reduced (18, 0), juce::Justification::centred, true);
+
+    auto inner = right.toFloat().reduced (16.0f * uiScale, 16.0f * uiScale);
+    auto topRow = inner.removeFromTop (44.0f * uiScale);
+    auto modePill = topRow.removeFromLeft (topRow.getWidth() * 0.36f);
+    topRow.removeFromLeft (10.0f * uiScale);
+    auto slabChip = topRow;
+
+    g.setColour (juce::Colour::fromRGBA (34, 62, 96, 244));
+    g.fillRoundedRectangle (modePill, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.fillRoundedRectangle (modePill.reduced (3.0f, 3.0f).withHeight (modePill.getHeight() * 0.38f), 4.0f);
+    g.setColour (juce::Colour::fromRGBA (126, 240, 255, 200));
+    g.drawRoundedRectangle (modePill, 8.0f, 1.6f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (13.5f * uiScale));
+    g.drawFittedText ("BUILD MODE", modePill.reduced (10.0f, 0.0f).toNearestInt(), juce::Justification::centred, 1);
+
+    g.setColour (juce::Colour::fromRGBA (15, 26, 62, 238));
+    g.fillRoundedRectangle (slabChip, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
+    g.fillRoundedRectangle (slabChip.reduced (3.0f, 3.0f).withHeight (slabChip.getHeight() * 0.28f), 4.0f);
+    g.setColour (juce::Colour::fromRGBA (90, 176, 255, 112));
+    g.drawRoundedRectangle (slabChip, 8.0f, 1.2f);
+    g.setColour (juce::Colour::fromRGBA (198, 228, 255, 222));
+    g.setFont (juce::FontOptions (12.5f * uiScale));
+    g.drawFittedText ("PLANET  " + planet.name.toUpperCase(),
+                      slabChip.reduced (14.0f, 0.0f).toNearestInt(),
+                      juce::Justification::centredLeft, 1);
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto detailChip = inner.removeFromTop (56.0f * uiScale);
+    g.setColour (juce::Colour::fromRGBA (12, 22, 52, 210));
+    g.fillRoundedRectangle (detailChip, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (102, 182, 255, 46));
+    g.drawRoundedRectangle (detailChip, 8.0f, 1.1f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (12.0f * uiScale));
+    g.drawFittedText ("Enter descends into the builder   Esc returns to the galaxy   landed planets stay persistent",
+                      detailChip.reduced (14.0f, 6.0f).toNearestInt(), juce::Justification::centredLeft, 2);
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto drawStat = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
+    {
+        g.setColour (juce::Colour::fromRGBA (12, 22, 52, 210));
+        g.fillRoundedRectangle (bounds, 7.0f);
+        g.setColour (juce::Colour::fromRGBA (102, 182, 255, 46));
+        g.drawRoundedRectangle (bounds, 7.0f, 1.1f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
+        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.24f), 3.0f);
+        auto statInner = bounds.reduced (10.0f * uiScale, 5.0f * uiScale);
+        g.setColour (juce::Colour::fromRGBA (152, 216, 255, 170));
+        g.setFont (juce::FontOptions (10.0f * uiScale));
+        g.drawFittedText (label, statInner.removeFromTop (12.0f).toNearestInt(), juce::Justification::centredLeft, 1);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (13.0f * uiScale));
+        g.drawFittedText (value, statInner.toNearestInt(), juce::Justification::centredLeft, 1);
+    };
+    const float statGap = 10.0f * uiScale;
+    auto statRowA = inner.removeFromTop (54.0f * uiScale);
+    const float statWidthA = (statRowA.getWidth() - statGap * 2.0f) / 3.0f;
+    drawStat (statRowA.removeFromLeft (statWidthA), "BUILD", "APPROACH");
+    statRowA.removeFromLeft (statGap);
+    drawStat (statRowA.removeFromLeft (statWidthA), "PLACE", "VOXEL");
+    statRowA.removeFromLeft (statGap);
+    drawStat (statRowA.removeFromLeft (statWidthA), "KEY", getNoteNameForLayer (1));
+
+    inner.removeFromTop (8.0f * uiScale);
+    auto statRowB = inner.removeFromTop (54.0f * uiScale);
+    const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
+    drawStat (statRowB.removeFromLeft (statWidthB), "SCALE", "Chromatic");
+    statRowB.removeFromLeft (statGap);
+    drawStat (statRowB.removeFromLeft (statWidthB), "SYNTH", "Landing");
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto drawInfoChip = [&] (juce::Rectangle<float> bounds, const juce::String& text)
+    {
+        g.setColour (juce::Colour::fromRGBA (12, 22, 52, 198));
+        g.fillRoundedRectangle (bounds, 7.0f);
+        g.setColour (juce::Colour::fromRGBA (102, 182, 255, 42));
+        g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 16));
+        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.20f), 3.0f);
+        g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
+        g.setFont (juce::FontOptions (11.5f * uiScale));
+        g.drawFittedText (text, bounds.reduced (12.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft, 1);
+    };
+    const float infoGap = 8.0f * uiScale;
+    auto infoRowA = inner.removeFromTop (30.0f * uiScale);
+    const float infoWidth = (infoRowA.getWidth() - infoGap) / 2.0f;
+    drawInfoChip (infoRowA.removeFromLeft (infoWidth), "Orbit  " + juce::String (planet.orbitIndex + 1));
+    infoRowA.removeFromLeft (infoGap);
+    drawInfoChip (infoRowA.removeFromLeft (infoWidth), "Root  " + juce::String (planet.musicalRootHz, 1) + " Hz");
+
+    inner.removeFromTop (8.0f * uiScale);
+    auto infoRowB = inner.removeFromTop (30.0f * uiScale);
+    drawInfoChip (infoRowB.removeFromLeft (infoWidth), "Water  " + juce::String (planet.water, 2));
+    infoRowB.removeFromLeft (infoGap);
+    drawInfoChip (infoRowB.removeFromLeft (infoWidth), "Energy  " + juce::String (planet.energy, 2));
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto bodyChip = inner.removeFromTop (68.0f * uiScale);
+    drawInfoChip (bodyChip, "Landing is the seam between galaxy metadata and a concrete planet volume. If you built here before, the voxel stack has already been restored.");
+
+    inner.removeFromTop (10.0f * uiScale);
+    auto preview = inner.removeFromTop (juce::jmin (220.0f * uiScale, inner.getHeight() - 52.0f * uiScale)).toNearestInt().reduced (6);
+    drawReferencePanel (preview);
+    const int tileSize = juce::jmax (1, juce::jmin (preview.getWidth() / getSurfaceWidth(),
+                                                    preview.getHeight() / getSurfaceDepth()));
+    const int gridWidth = tileSize * getSurfaceWidth();
+    const int gridHeight = tileSize * getSurfaceDepth();
+    const int gridX = preview.getX() + (preview.getWidth() - gridWidth) / 2;
+    const int gridY = preview.getY() + (preview.getHeight() - gridHeight) / 2;
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+        {
+            int topZ = 0;
+            for (int z = getSurfaceHeight() - 1; z >= 0; --z)
+            {
+                if (activePlanetState->getBlock (x, y, z) != 0)
+                {
+                    topZ = z;
+                    break;
+                }
+            }
+
+            g.setColour (getNoteColourForLayer (topZ));
+            g.fillRect (gridX + x * tileSize, gridY + y * tileSize, juce::jmax (1, tileSize - 1), juce::jmax (1, tileSize - 1));
+        }
+
+    inner.removeFromTop (8.0f * uiScale);
+    auto footerRow = inner.removeFromTop (42.0f * uiScale);
+    drawInfoChip (footerRow, "Enter descends   Esc returns   surface data is resident and persistent on disk");
+}
+
+void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    ensureActivePlanetLoaded();
+
+    if (builderViewMode == BuilderViewMode::firstPerson)
+    {
+        drawFirstPersonBuilder (g, area.reduced (8));
+        return;
+    }
+
+    area = area.reduced (14);
+    auto gridArea = area.removeFromLeft (area.proportionOfWidth (0.64f));
+    area.removeFromLeft (18);
+    auto infoArea = area.reduced (10);
+    gridArea = gridArea.reduced (10).withTrimmedLeft (10).withTrimmedBottom (10);
+    infoArea = infoArea.withY (gridArea.getY()).withHeight (gridArea.getHeight());
+    const float uiScale = juce::jlimit (0.80f, 1.0f,
+                                        juce::jmin (infoArea.getWidth() / 700.0f,
+                                                    infoArea.getHeight() / 900.0f));
+    auto drawReferencePanel = [&] (juce::Rectangle<int> bounds)
+    {
+        auto panel = bounds.toFloat();
+        juce::ColourGradient hudGradient (juce::Colour::fromRGBA (11, 18, 44, 238),
+                                          panel.getX(), panel.getY(),
+                                          juce::Colour::fromRGBA (16, 28, 68, 228),
+                                          panel.getRight(), panel.getBottom(),
+                                          false);
+        hudGradient.addColour (0.38, juce::Colour::fromRGBA (34, 98, 198, 132));
+        g.setGradientFill (hudGradient);
+        g.fillRoundedRectangle (panel, 12.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 30));
+        g.fillRoundedRectangle (panel.reduced (4.0f, 4.0f).withHeight (panel.getHeight() * 0.16f), 6.0f);
+        g.setColour (juce::Colour::fromRGBA (118, 236, 255, 178));
+        g.drawRoundedRectangle (panel, 12.0f, 1.8f);
+        g.setColour (juce::Colour::fromRGBA (28, 54, 104, 255));
+        g.drawRoundedRectangle (panel.reduced (4.0f), 8.0f, 1.0f);
+    };
+
+    drawReferencePanel (gridArea);
+    drawReferencePanel (infoArea);
+
+    if (performanceMode)
+        drawPerformanceView (g, gridArea.toFloat());
+    else if (builderViewMode == BuilderViewMode::firstPerson)
+        drawFirstPersonBuilder (g, gridArea);
+    else
+        drawIsometricBuilder (g, gridArea);
+
+    auto inner = infoArea.toFloat().reduced (18.0f * uiScale, 16.0f * uiScale);
+    auto drawCard = [&] (juce::Rectangle<float> bounds, float radius = 8.0f)
+    {
+        g.setColour (juce::Colour::fromRGBA (13, 23, 54, 224));
+        g.fillRoundedRectangle (bounds, radius);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
+        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.16f), 3.0f);
+        g.setColour (juce::Colour::fromRGBA (102, 182, 255, 52));
+        g.drawRoundedRectangle (bounds, radius, 1.1f);
+    };
+
+    auto drawLabel = [&] (juce::Rectangle<float> bounds, const juce::String& label)
+    {
+        g.setColour (juce::Colour::fromRGBA (152, 216, 255, 170));
+        g.setFont (juce::FontOptions (10.5f * uiScale));
+        g.drawText (label, bounds.toNearestInt(), juce::Justification::centredLeft);
+    };
+
+    auto drawValueCard = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
+    {
+        drawCard (bounds, 8.0f);
+        auto text = bounds.reduced (14.0f * uiScale, 10.0f * uiScale);
+        drawLabel (text.removeFromTop (16.0f * uiScale), label);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (14.5f * uiScale));
+        g.drawFittedText (value, text.toNearestInt(), juce::Justification::centredLeft, 1);
+    };
+
+    if (performanceMode)
+    {
+        drawPerformanceSidebar (g, infoArea.toFloat());
+        return;
+    }
+
+    auto headerCard = inner.removeFromTop (60.0f * uiScale);
+    drawCard (headerCard, 9.0f);
+    auto headerInner = headerCard.reduced (14.0f * uiScale, 10.0f * uiScale);
+    auto titleRow = headerInner.removeFromTop (22.0f * uiScale);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (16.0f * uiScale));
+    g.drawText ("ISOMETRIC EDIT", titleRow.toNearestInt(), juce::Justification::centredLeft);
+    g.setColour (juce::Colour::fromRGBA (186, 224, 255, 210));
+    g.setFont (juce::FontOptions (11.5f * uiScale));
+    g.drawFittedText (getSelectedPlanet().name.toUpperCase() + "   |   " + getIsometricChordName().toUpperCase(),
+                      headerInner.toNearestInt(), juce::Justification::centredLeft, 1);
+
+    inner.removeFromTop (14.0f * uiScale);
+    auto controlsCard = inner.removeFromTop (84.0f * uiScale);
+    drawCard (controlsCard, 9.0f);
+    auto controlsInner = controlsCard.reduced (14.0f * uiScale, 10.0f * uiScale);
+    drawLabel (controlsInner.removeFromTop (16.0f * uiScale), "CONTROLS");
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (11.6f * uiScale));
+    g.drawFittedText ("Pan WASD   Rotate Q/E   Height [ ]   Notes 1-4\nCycle chord V   Place click/P   Delete X   Exit Esc",
+                      controlsInner.toNearestInt(),
+                      juce::Justification::topLeft,
+                      3);
+
+    inner.removeFromTop (14.0f * uiScale);
+    int filledCount = 0;
+    for (int z = 0; z < getSurfaceHeight(); ++z)
+        for (int y = 0; y < getSurfaceDepth(); ++y)
+            for (int x = 0; x < getSurfaceWidth(); ++x)
+                filledCount += activePlanetState->getBlock (x, y, z) != 0 ? 1 : 0;
+
+    const float gap = 10.0f * uiScale;
+    auto statsTop = inner.removeFromTop (60.0f * uiScale);
+    const float twoCol = (statsTop.getWidth() - gap) / 2.0f;
+    drawValueCard (statsTop.removeFromLeft (twoCol), "ROOT", getNoteNameForLayer (builderLayer));
+    statsTop.removeFromLeft (gap);
+    drawValueCard (statsTop.removeFromLeft (twoCol), "NOTES", juce::String (isometricPlacementHeight));
+
+    inner.removeFromTop (12.0f * uiScale);
+    auto statsBottom = inner.removeFromTop (60.0f * uiScale);
+    drawValueCard (statsBottom.removeFromLeft (twoCol), "CURSOR", "x" + juce::String (builderCursorX) + "  y" + juce::String (builderCursorY) + "  z" + juce::String (builderLayer));
+    statsBottom.removeFromLeft (gap);
+    drawValueCard (statsBottom.removeFromLeft (twoCol), "ZOOM", juce::String (isometricCamera.zoom, 2));
+
+    inner.removeFromTop (16.0f * uiScale);
+    auto chordCard = inner.removeFromTop (136.0f * uiScale);
+    drawCard (chordCard, 9.0f);
+    auto chordInner = chordCard.reduced (12.0f * uiScale, 10.0f * uiScale);
+    drawLabel (chordInner.removeFromTop (16.0f * uiScale), "CHORD TYPE");
+    chordInner.removeFromTop (10.0f * uiScale);
+
+    auto drawChordChip = [&] (juce::Rectangle<float> bounds, const juce::String& text, bool active)
+    {
+        g.setColour (active ? juce::Colour::fromRGBA (255, 168, 84, 104)
+                            : juce::Colour::fromRGBA (20, 32, 68, 228));
+        g.fillRoundedRectangle (bounds, 8.0f);
+        g.setColour (active ? juce::Colour::fromRGBA (255, 224, 168, 226)
+                            : juce::Colour::fromRGBA (102, 182, 255, 48));
+        g.drawRoundedRectangle (bounds, 8.0f, active ? 1.7f : 1.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, active ? 28 : 12));
+        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.18f), 3.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (11.2f * uiScale));
+        g.drawFittedText (text, bounds.toNearestInt(), juce::Justification::centred, 1);
+    };
+
+    const std::array<IsometricChordType, 8> chordTypes {
+        IsometricChordType::single, IsometricChordType::power, IsometricChordType::majorTriad, IsometricChordType::minorTriad,
+        IsometricChordType::sus2, IsometricChordType::sus4, IsometricChordType::majorSeventh, IsometricChordType::minorSeventh
+    };
+    const std::array<juce::String, 8> chordNames { "Single", "Power", "Major", "Minor", "Sus2", "Sus4", "Maj7", "Min7" };
+    auto chordTop = chordInner.removeFromTop (46.0f * uiScale);
+    chordInner.removeFromTop (10.0f * uiScale);
+    auto chordBottom = chordInner.removeFromTop (46.0f * uiScale);
+    const float chipGap = 8.0f * uiScale;
+    const float chipWidth = (chordTop.getWidth() - chipGap * 3.0f) / 4.0f;
+    for (size_t i = 0; i < chordTypes.size(); ++i)
+    {
+        auto& row = i < 4 ? chordTop : chordBottom;
+        auto chip = row.removeFromLeft (chipWidth);
+        if ((i % 4) != 3)
+            row.removeFromLeft (chipGap);
+        drawChordChip (chip, chordNames[i], chordTypes[i] == isometricChordType);
+    }
+
+    inner.removeFromTop (16.0f * uiScale);
+    auto footerCard = inner.removeFromTop (66.0f * uiScale);
+    drawCard (footerCard, 9.0f);
+    auto footerInner = footerCard.reduced (14.0f * uiScale, 10.0f * uiScale);
+    drawLabel (footerInner.removeFromTop (16.0f * uiScale), "STATUS");
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (11.4f * uiScale));
+    g.drawFittedText ("Filled " + juce::String (filledCount) + "   |   Rotation " + juce::String (isometricCamera.rotation)
+                    + "   |   Mouse place/remove active",
+                      footerInner.toNearestInt(),
+                      juce::Justification::topLeft,
+                      2);
+}
+
+void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area)
+{
+    const auto board = getPerformanceBoardBounds (area);
+    const float tileSize = board.getWidth() / static_cast<float> (getSurfaceWidth());
+    const float pulse = 0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.0034));
+    const float beatPulse = 0.5f + 0.5f * std::sin (juce::Time::getMillisecondCounterHiRes() * 0.0032);
+    const float barPulse = 0.5f + 0.5f * std::sin (juce::Time::getMillisecondCounterHiRes() * 0.0011);
+
+    juce::ColourGradient boardGlow (juce::Colour::fromRGBA (42, 102, 212, 120),
+                                    board.getCentreX(), board.getCentreY() - board.getHeight() * 0.15f,
+                                    juce::Colour::fromRGBA (8, 13, 36, 0),
+                                    board.getCentreX(), board.getBottom() + 70.0f,
+                                    true);
+    g.setGradientFill (boardGlow);
+    g.fillEllipse (board.expanded (86.0f, 74.0f));
+    g.setColour (juce::Colour::fromRGBA (120, 220, 255, static_cast<uint8_t> (18 + 20 * pulse)));
+    g.drawEllipse (board.expanded (66.0f, 56.0f), 2.0f + pulse * 1.2f);
+    g.setColour (juce::Colour::fromRGBA (120, 220, 255, static_cast<uint8_t> (10 + 60 * barPulse)));
+    g.drawEllipse (board.expanded (82.0f + 20.0f * barPulse, 68.0f + 18.0f * barPulse), 1.1f + 1.2f * barPulse);
+
+    g.setColour (juce::Colour::fromRGBA (6, 11, 30, 236));
+    g.fillRoundedRectangle (board.expanded (26.0f), 28.0f);
+    g.setColour (juce::Colour::fromRGBA (74, 144, 255, 72));
+    g.drawRoundedRectangle (board.expanded (26.0f), 28.0f, 1.8f);
+
+    const auto activeRegion = getPerformanceRegionBounds();
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+    {
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+        {
+            auto cell = juce::Rectangle<float> (board.getX() + x * tileSize,
+                                                board.getY() + y * tileSize,
+                                                tileSize,
+                                                tileSize);
+            const bool inRegion = activeRegion.contains (x, y);
+            const auto colour = inRegion ? juce::Colour::fromRGBA (8, 14, 34, 214)
+                                         : juce::Colour::fromRGBA (8, 14, 34, 130);
+            g.setColour (colour);
+            g.fillRect (cell);
+
+            std::vector<int> notes;
+            notes.reserve (static_cast<size_t> (getSurfaceHeight()));
+            for (int z = 1; z < getSurfaceHeight(); ++z)
+                if (activePlanetState->getBlock (x, y, z) != 0)
+                    notes.push_back (z);
+
+            if (! notes.empty())
+            {
+                auto innerCell = cell.reduced (2.0f);
+                const float sliceHeight = innerCell.getHeight() / static_cast<float> (notes.size());
+                for (size_t i = 0; i < notes.size(); ++i)
+                {
+                    auto sliceBounds = juce::Rectangle<float> (innerCell.getX(),
+                                                               innerCell.getBottom() - sliceHeight * static_cast<float> (i + 1) + 1.0f,
+                                                               innerCell.getWidth(),
+                                                               juce::jmax (1.0f, sliceHeight - 2.0f));
+                    auto sliceColour = getNoteColourForLayer (notes[i]).interpolatedWith (juce::Colours::white, 0.08f);
+                    if (! inRegion)
+                    {
+                        sliceColour = sliceColour.interpolatedWith (juce::Colour::greyLevel (sliceColour.getPerceivedBrightness()), 0.78f)
+                                                 .withMultipliedAlpha (0.4f);
+                    }
+
+                    g.setColour (sliceColour);
+                    g.fillRoundedRectangle (sliceBounds, 2.4f);
+                }
+            }
+
+            g.setColour (juce::Colour::fromRGBA (88, 122, 214, inRegion ? 36 : 18));
+            g.drawRect (cell, 1.0f);
+        }
+    }
+
+    const auto regionLocal = juce::Rectangle<float> (board.getX() + static_cast<float> (activeRegion.getX()) * tileSize,
+                                                     board.getY() + static_cast<float> (activeRegion.getY()) * tileSize,
+                                                     static_cast<float> (activeRegion.getWidth()) * tileSize,
+                                                     static_cast<float> (activeRegion.getHeight()) * tileSize);
+    g.setColour (juce::Colour::fromRGBA (85, 210, 255, 34));
+    g.fillRoundedRectangle (regionLocal.expanded (3.0f), 12.0f);
+    g.setColour (juce::Colour::fromRGBA (144, 240, 255, 182));
+    g.drawRoundedRectangle (regionLocal.expanded (2.5f), 12.0f, 2.2f);
+
+    for (const auto& track : performanceTracks)
+    {
+        if (! activeRegion.contains (track.cell))
+            continue;
+
+        auto cell = juce::Rectangle<float> (board.getX() + track.cell.x * tileSize,
+                                            board.getY() + track.cell.y * tileSize,
+                                            tileSize,
+                                            tileSize).reduced (tileSize * 0.16f);
+        g.setColour (juce::Colour::fromRGBA (80, 230, 255, 110));
+        if (track.horizontal)
+            g.drawLine (cell.getX(), cell.getCentreY(), cell.getRight(), cell.getCentreY(), 3.0f);
+        else
+            g.drawLine (cell.getCentreX(), cell.getY(), cell.getCentreX(), cell.getBottom(), 3.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 56));
+        g.drawRoundedRectangle (cell, 4.0f, 1.0f);
+
+        if (performanceSelection.kind == PerformanceSelection::Kind::track && performanceSelection.cell == track.cell)
+        {
+            g.setColour (juce::Colour::fromRGBA (255, 255, 255, 180));
+            g.drawRoundedRectangle (cell.expanded (tileSize * 0.12f), 6.0f, 2.2f);
+        }
+    }
+
+    for (const auto& orbitCenter : performanceOrbitCenters)
+    {
+        if (! activeRegion.contains (orbitCenter))
+            continue;
+
+        auto cell = juce::Rectangle<float> (board.getX() + orbitCenter.x * tileSize,
+                                            board.getY() + orbitCenter.y * tileSize,
+                                            tileSize,
+                                            tileSize).reduced (tileSize * 0.10f);
+        g.setColour (juce::Colour::fromRGBA (255, 170, 120, 42));
+        g.fillEllipse (cell.expanded (tileSize * 0.18f));
+        g.setColour (juce::Colour::fromRGBA (255, 200, 140, 210));
+        g.drawEllipse (cell, 2.2f);
+        g.drawEllipse (cell.reduced (tileSize * 0.12f), 1.2f);
+        g.drawLine (cell.getCentreX(), cell.getY(), cell.getCentreX(), cell.getBottom(), 1.3f);
+        g.drawLine (cell.getX(), cell.getCentreY(), cell.getRight(), cell.getCentreY(), 1.3f);
+    }
+
+    for (const auto& cellPoint : performanceAutomataCells)
+    {
+        if (! activeRegion.contains (cellPoint))
+            continue;
+
+        auto cell = juce::Rectangle<float> (board.getX() + cellPoint.x * tileSize,
+                                            board.getY() + cellPoint.y * tileSize,
+                                            tileSize,
+                                            tileSize).reduced (tileSize * 0.18f);
+        g.setColour (juce::Colour::fromRGBA (255, 180, 120, 44));
+        g.fillRoundedRectangle (cell.expanded (tileSize * 0.16f), 4.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 214, 180, 230));
+        g.fillRoundedRectangle (cell, 4.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 160));
+        g.drawRoundedRectangle (cell, 4.0f, 1.2f);
+    }
+
+    for (const auto& snake : performanceSnakes)
+    {
+        if (snake.body.empty())
+            continue;
+
+        juce::Path spine;
+        std::vector<juce::Point<float>> centres;
+        centres.reserve (snake.body.size());
+
+        for (const auto& segment : snake.body)
+        {
+            auto cell = juce::Rectangle<float> (board.getX() + segment.x * tileSize,
+                                                board.getY() + segment.y * tileSize,
+                                                tileSize,
+                                                tileSize);
+            centres.push_back (cell.getCentre());
+        }
+
+        if (! centres.empty())
+        {
+            spine.startNewSubPath (centres.front());
+            for (size_t i = 1; i < centres.size(); ++i)
+                spine.lineTo (centres[i]);
+
+            g.setColour (snake.colour.withAlpha (0.18f));
+            g.strokePath (spine, juce::PathStrokeType (tileSize * 0.34f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (snake.colour.withAlpha (0.10f + 0.08f * pulse));
+            g.strokePath (spine, juce::PathStrokeType (tileSize * 0.52f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (snake.colour.withAlpha (0.78f));
+            g.strokePath (spine, juce::PathStrokeType (tileSize * 0.16f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+
+        for (size_t i = 0; i < snake.body.size(); ++i)
+        {
+            const auto cellPoint = snake.body[i];
+            if (! activeRegion.contains (cellPoint))
+                continue;
+
+            auto cell = juce::Rectangle<float> (board.getX() + cellPoint.x * tileSize,
+                                                board.getY() + cellPoint.y * tileSize,
+                                                tileSize,
+                                                tileSize);
+            auto orb = cell.reduced (i == 0 ? tileSize * 0.18f : tileSize * 0.24f);
+            auto segmentColour = snake.colour;
+            if (i > 0)
+                segmentColour = segmentColour.darker (static_cast<float> (i) * 0.05f);
+
+            g.setColour (segmentColour.withAlpha (i == 0 ? 0.22f : 0.12f));
+            g.fillEllipse (orb.expanded (tileSize * 0.12f));
+            g.setColour (segmentColour.withAlpha (i == 0 ? 0.98f : 0.84f));
+            g.fillEllipse (orb);
+            g.setColour (juce::Colours::white.withAlpha (i == 0 ? 0.78f : 0.26f));
+            g.drawEllipse (orb, i == 0 ? 1.8f : 1.0f);
+
+            if (i == 0)
+            {
+                const auto centre = orb.getCentre();
+                const juce::Point<float> dir (static_cast<float> (snake.direction.x), static_cast<float> (snake.direction.y));
+                const juce::Point<float> perp (-dir.y, dir.x);
+                const auto eyeOffset = perp * (orb.getWidth() * 0.14f);
+                const auto eyeForward = dir * (orb.getWidth() * 0.12f);
+                const float eyeSize = juce::jmax (2.0f, orb.getWidth() * 0.10f);
+
+                g.setColour (juce::Colour::fromRGBA (6, 10, 24, 220));
+                g.fillEllipse (juce::Rectangle<float> (eyeSize, eyeSize).withCentre (centre + eyeForward + eyeOffset));
+                g.fillEllipse (juce::Rectangle<float> (eyeSize, eyeSize).withCentre (centre + eyeForward - eyeOffset));
+            }
+        }
+    }
+
+    for (const auto& disc : performanceDiscs)
+    {
+        auto cell = juce::Rectangle<float> (board.getX() + disc.cell.x * tileSize,
+                                            board.getY() + disc.cell.y * tileSize,
+                                            tileSize,
+                                            tileSize).reduced (tileSize * 0.10f);
+        const auto centre = cell.getCentre();
+        const float radius = cell.getWidth() * 0.38f;
+        const bool hovered = performanceHoverCell.has_value() && *performanceHoverCell == disc.cell;
+        const auto glowColour = hovered ? juce::Colour::fromRGBA (255, 250, 180, 170)
+                                        : juce::Colour::fromRGBA (90, 240, 255, 150);
+        const auto ringColour = hovered ? juce::Colour::fromRGBA (255, 248, 210, 250)
+                                        : juce::Colour::fromRGBA (170, 244, 255, 245);
+        const auto coreColour = hovered ? juce::Colour::fromRGBA (34, 44, 86, 250)
+                                        : juce::Colour::fromRGBA (10, 22, 58, 245);
+
+        g.setColour (glowColour.withAlpha (hovered ? 0.30f : 0.22f));
+        g.fillEllipse (cell.expanded (tileSize * 0.20f));
+        g.setColour (glowColour.withAlpha (0.12f + 0.10f * pulse));
+        g.fillEllipse (cell.expanded (tileSize * 0.34f));
+
+        g.setColour (coreColour);
+        g.fillEllipse (cell);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 64));
+        g.fillEllipse (cell.reduced (tileSize * 0.18f).withTrimmedBottom (tileSize * 0.22f));
+
+        g.setColour (ringColour);
+        g.drawEllipse (cell, hovered ? 3.2f : 2.4f);
+        g.drawEllipse (cell.reduced (tileSize * 0.10f), hovered ? 1.8f : 1.3f);
+
+        const juce::Point<float> dir (static_cast<float> (disc.direction.x), static_cast<float> (disc.direction.y));
+        const juce::Point<float> perp (-dir.y, dir.x);
+        const auto tip = centre + dir * (radius * 1.12f);
+        const auto base = centre - dir * (radius * 0.14f);
+        const auto tailStart = centre - dir * (radius * 0.58f);
+        const auto tailEnd = centre + dir * (radius * 0.40f);
+
+        juce::Path pointerShadow;
+        pointerShadow.startNewSubPath (base + perp * (radius * 0.34f));
+        pointerShadow.lineTo (tip + dir * (radius * 0.10f));
+        pointerShadow.lineTo (base - perp * (radius * 0.34f));
+        pointerShadow.closeSubPath();
+        g.setColour (glowColour.withAlpha (hovered ? 0.28f : 0.20f));
+        g.fillPath (pointerShadow);
+
+        g.setColour (ringColour.withAlpha (0.70f));
+        g.drawLine ({ tailStart, tailEnd }, hovered ? 4.2f : 3.4f);
+        g.setColour (juce::Colours::white.withAlpha (0.80f));
+        g.drawLine ({ centre - dir * (radius * 0.44f), centre + dir * (radius * 0.26f) }, hovered ? 1.8f : 1.4f);
+
+        juce::Path arrow;
+        arrow.startNewSubPath (base + perp * (radius * 0.28f));
+        arrow.lineTo (tip);
+        arrow.lineTo (base - perp * (radius * 0.28f));
+        arrow.closeSubPath();
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 238));
+        g.fillPath (arrow);
+        g.setColour (juce::Colour::fromRGBA (8, 16, 34, 190));
+        g.strokePath (arrow, juce::PathStrokeType (1.2f));
+
+        auto nose = juce::Rectangle<float> (radius * 0.34f, radius * 0.34f)
+                        .withCentre (centre + dir * (radius * 0.62f));
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 248, 210, 245)
+                             : juce::Colour::fromRGBA (120, 240, 255, 235));
+        g.fillEllipse (nose);
+
+        juce::Path crosshair;
+        crosshair.startNewSubPath (centre.x - radius * 0.34f, centre.y);
+        crosshair.lineTo (centre.x + radius * 0.34f, centre.y);
+        crosshair.startNewSubPath (centre.x, centre.y - radius * 0.34f);
+        crosshair.lineTo (centre.x, centre.y + radius * 0.34f);
+        g.setColour (ringColour.withAlpha (0.55f));
+        g.strokePath (crosshair, juce::PathStrokeType (1.1f));
+
+        if (performanceSelection.kind == PerformanceSelection::Kind::disc && performanceSelection.cell == disc.cell)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.86f));
+            g.drawEllipse (cell.expanded (tileSize * 0.16f), 2.4f);
+        }
+    }
+
+    for (auto flash : performanceFlashes)
+    {
+        auto cell = juce::Rectangle<float> (board.getX() + flash.cell.x * tileSize,
+                                            board.getY() + flash.cell.y * tileSize,
+                                            tileSize,
+                                            tileSize).reduced (tileSize * 0.10f);
+        g.setColour (flash.colour.withAlpha (flash.life * (flash.pulse ? 0.46f : 0.28f)));
+        g.fillRoundedRectangle (cell.expanded (8.0f * flash.life), 8.0f);
+    }
+
+    if (performanceHoverCell.has_value())
+    {
+        auto hover = juce::Rectangle<float> (board.getX() + performanceHoverCell->x * tileSize,
+                                             board.getY() + performanceHoverCell->y * tileSize,
+                                             tileSize,
+                                             tileSize).reduced (tileSize * 0.08f);
+        g.setColour (juce::Colour::fromRGBA (110, 240, 255, 88));
+        g.fillRoundedRectangle (hover, 6.0f);
+        g.setColour (juce::Colour::fromRGBA (160, 248, 255, 220));
+        g.drawRoundedRectangle (hover, 6.0f, 2.0f);
+
+        auto previewCell = juce::Rectangle<float> (board.getX() + performanceHoverCell->x * tileSize,
+                                                   board.getY() + performanceHoverCell->y * tileSize,
+                                                   tileSize,
+                                                   tileSize).reduced (tileSize * 0.14f);
+        if (performancePlacementMode == PerformancePlacementMode::placeDisc)
+        {
+            const auto centre = previewCell.getCentre();
+            const float radius = previewCell.getWidth() * 0.34f;
+            const juce::Point<float> dir (static_cast<float> (performanceSelectedDirection.x),
+                                          static_cast<float> (performanceSelectedDirection.y));
+            const juce::Point<float> perp (-dir.y, dir.x);
+            juce::Path arrow;
+            const auto tip = centre + dir * (radius * 1.12f);
+            const auto base = centre - dir * (radius * 0.14f);
+            arrow.startNewSubPath (base + perp * (radius * 0.28f));
+            arrow.lineTo (tip);
+            arrow.lineTo (base - perp * (radius * 0.28f));
+            arrow.closeSubPath();
+            g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
+            g.fillEllipse (previewCell.expanded (tileSize * 0.24f));
+            g.setColour (juce::Colour::fromRGBA (255, 236, 200, 210));
+            g.fillPath (arrow);
+            g.setColour (juce::Colour::fromRGBA (255, 255, 255, 180));
+            g.drawEllipse (previewCell, 1.8f);
+        }
+        else if (performancePlacementMode == PerformancePlacementMode::placeTrack)
+        {
+            g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
+            g.fillRoundedRectangle (previewCell.expanded (tileSize * 0.16f), 5.0f);
+            g.setColour (juce::Colour::fromRGBA (220, 246, 255, 220));
+            if (performanceTrackHorizontal)
+                g.drawLine (previewCell.getX(), previewCell.getCentreY(), previewCell.getRight(), previewCell.getCentreY(), 3.0f);
+            else
+                g.drawLine (previewCell.getCentreX(), previewCell.getY(), previewCell.getCentreX(), previewCell.getBottom(), 3.0f);
+        }
+    }
+
+    g.setColour (juce::Colour::fromRGBA (126, 224, 255, 190));
+    g.drawRoundedRectangle (board.expanded (5.0f), 12.0f, 2.2f);
+    g.setColour (juce::Colour::fromRGBA (190, 244, 255, static_cast<uint8_t> (18 + 74 * beatPulse)));
+    g.drawRoundedRectangle (board.expanded (9.0f + 6.0f * beatPulse), 16.0f, 1.2f + 1.6f * beatPulse);
+}
+
+void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<float> area)
+{
+    auto panel = area.reduced (10.0f);
+    juce::ColourGradient sidebarGradient (juce::Colour::fromRGBA (8, 14, 34, 238),
+                                         panel.getX(), panel.getY(),
+                                         juce::Colour::fromRGBA (16, 28, 66, 224),
+                                         panel.getRight(), panel.getBottom(),
+                                         false);
+    g.setGradientFill (sidebarGradient);
+    g.fillRoundedRectangle (panel, 24.0f);
+    g.setColour (juce::Colour::fromRGBA (124, 220, 255, 92));
+    g.drawRoundedRectangle (panel, 24.0f, 1.4f);
+
+    auto inner = panel.reduced (18.0f, 18.0f);
+    auto badge = inner.removeFromTop (34.0f);
+    g.setColour (juce::Colour::fromRGBA (92, 236, 255, 26));
+    g.fillRoundedRectangle (badge, 16.0f);
+    g.setColour (juce::Colour::fromRGBA (124, 236, 255, 150));
+    g.drawRoundedRectangle (badge, 16.0f, 1.2f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (15.0f));
+    g.drawText ("PERFORMANCE MODE", badge.toNearestInt(), juce::Justification::centred);
+
+    inner.removeFromTop (14.0f);
+    auto drawCard = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value, const juce::String& sub)
+    {
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 15));
+        g.fillRoundedRectangle (bounds, 18.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 24));
+        g.drawRoundedRectangle (bounds, 18.0f, 1.0f);
+        auto content = bounds.reduced (14.0f, 12.0f);
+        g.setColour (juce::Colour::fromRGBA (150, 216, 255, 168));
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (label, content.removeFromTop (12.0f).toNearestInt(), juce::Justification::centredLeft);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (20.0f));
+        g.drawText (value, content.removeFromTop (24.0f).toNearestInt(), juce::Justification::centredLeft);
+        g.setColour (juce::Colour::fromRGBA (218, 232, 255, 170));
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawFittedText (sub, content.toNearestInt(), juce::Justification::centredLeft, 2);
+    };
+
+    auto card = inner.removeFromTop (82.0f);
+    const auto regionName = performanceRegionMode == 0 ? "Centre 50%"
+                          : performanceRegionMode == 1 ? "Centre 75%"
+                          : "Full";
+    drawCard (card, "REGION", regionName, "Z cycle arena");
+    inner.removeFromTop (10.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "TEMPO", juce::String (performanceBpm, 1) + " BPM", ", / . slower faster");
+    inner.removeFromTop (10.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "AGENTS", getPerformanceAgentModeName(), juce::String (performanceAgentCount) + " active | 0-8 count");
+    inner.removeFromTop (10.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "TOOLS", juce::String (static_cast<int> (performanceDiscs.size())) + " discs",
+              juce::String (static_cast<int> (performanceTracks.size())) + " tracks | "
+                + juce::String (static_cast<int> (performanceOrbitCenters.size())) + " centres");
+    inner.removeFromTop (10.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "TOOL", getPerformancePlacementModeName(),
+              performanceSelection.isValid() ? "Selected cell " + juce::String (performanceSelection.cell.x) + "," + juce::String (performanceSelection.cell.y)
+                                             : "No selection");
+    inner.removeFromTop (10.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "SOUND", getPerformanceSynthName(),
+              getPerformanceDrumName() + " drums");
+    inner.removeFromTop (16.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "NOTE TRIG", getSnakeTriggerModeName(),
+              "H toggle trigger mode");
+    inner.removeFromTop (10.0f);
+
+    card = inner.removeFromTop (82.0f);
+    drawCard (card, "SCALE", getPerformanceScaleName(),
+              "Key " + getPerformanceKeyName());
+    inner.removeFromTop (16.0f);
+
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 12));
+    g.fillRoundedRectangle (inner, 18.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 24));
+    g.drawRoundedRectangle (inner, 18.0f, 1.0f);
+    auto infoBlock = inner.reduced (14.0f, 12.0f);
+    g.setColour (juce::Colour::fromRGBA (150, 216, 255, 168));
+    g.setFont (juce::FontOptions (11.0f));
+    g.drawText ("CONTROLS", infoBlock.removeFromTop (12.0f).toNearestInt(), juce::Justification::centredLeft);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (13.0f));
+    const juce::String help =
+        "Enter return to build\n"
+        "Click place/select\n"
+        "Backspace delete selected\n"
+        "Arrow keys disc direction\n"
+        "Y disc tool / rotate dir\n"
+        "T track tool / rotate track\n"
+        "U select tool\n"
+        "I toggle orbit centre\n"
+        "N cycle agent mode\n"
+        "M synth  B drums\n"
+        "K key  L scale\n"
+        "H head/whole body\n"
+        ", / . tempo\n"
+        "Z cycle region\n"
+        "0-8 agent count\n"
+        "Esc back";
+    g.drawFittedText (help, infoBlock.toNearestInt(), juce::Justification::topLeft, 8);
+}
+
+void GameComponent::drawIsometricBuilder (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    const auto boardArea = area.toFloat().reduced (8.0f);
+    const float pulsePhase = static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.006));
+    const float beatPulse = 0.5f + 0.5f * pulsePhase;
+    const float juicePulse = 0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.008));
+
+    juce::ColourGradient boardGlow (juce::Colour::fromRGBA (42, 102, 212, static_cast<uint8_t> (90 + 30 * beatPulse)),
+                                    boardArea.getCentreX(), boardArea.getCentreY() - boardArea.getHeight() * 0.15f,
+                                    juce::Colour::fromRGBA (8, 13, 36, 0),
+                                    boardArea.getCentreX(), boardArea.getBottom() + 70.0f, true);
+    g.setGradientFill (boardGlow);
+    g.fillEllipse (boardArea.expanded (86.0f, 74.0f));
+    g.setColour (juce::Colour::fromRGBA (120, 220, 255, static_cast<uint8_t> (18 + 20 * juicePulse)));
+    g.drawEllipse (boardArea.expanded (66.0f, 56.0f), 2.0f + juicePulse * 1.2f);
+    g.setColour (juce::Colour::fromRGBA (120, 220, 255, static_cast<uint8_t> (10 + 60 * beatPulse)));
+    g.drawEllipse (boardArea.expanded (82.0f + 20.0f * beatPulse, 68.0f + 18.0f * beatPulse), 1.1f + 1.2f * beatPulse);
+    g.setColour (juce::Colour::fromRGBA (6, 11, 30, 236));
+    g.fillRoundedRectangle (boardArea.expanded (26.0f), 28.0f);
+    g.setColour (juce::Colour::fromRGBA (74, 144, 255, 72));
+    g.drawRoundedRectangle (boardArea.expanded (26.0f), 28.0f, 1.8f);
+
+    juce::Path floorPlane;
+    const auto floorA = projectIsometricPoint (0, 0, 0, boardArea);
+    const auto floorB = projectIsometricPoint (getSurfaceWidth(), 0, 0, boardArea);
+    const auto floorC = projectIsometricPoint (getSurfaceWidth(), getSurfaceDepth(), 0, boardArea);
+    const auto floorD = projectIsometricPoint (0, getSurfaceDepth(), 0, boardArea);
+    floorPlane.startNewSubPath (floorA);
+    floorPlane.lineTo (floorB);
+    floorPlane.lineTo (floorC);
+    floorPlane.lineTo (floorD);
+    floorPlane.closeSubPath();
+    g.setColour (juce::Colour::fromRGBA (10, 18, 42, 255));
+    g.fillPath (floorPlane);
+
+    juce::Path footprintTopOutline;
+    const auto topOutlineA = projectIsometricPoint (0, 0, 1, boardArea);
+    const auto topOutlineB = projectIsometricPoint (getSurfaceWidth(), 0, 1, boardArea);
+    const auto topOutlineC = projectIsometricPoint (getSurfaceWidth(), getSurfaceDepth(), 1, boardArea);
+    const auto topOutlineD = projectIsometricPoint (0, getSurfaceDepth(), 1, boardArea);
+    footprintTopOutline.startNewSubPath (topOutlineA);
+    footprintTopOutline.lineTo (topOutlineB);
+    footprintTopOutline.lineTo (topOutlineC);
+    footprintTopOutline.lineTo (topOutlineD);
+    footprintTopOutline.closeSubPath();
+
+    juce::Path gridPath;
+    const auto gridStep = getIsometricGridLineStep();
+    for (int x = 0; x <= getSurfaceWidth(); x += gridStep)
+    {
+        gridPath.startNewSubPath (projectIsometricPoint (x, 0, 0, boardArea));
+        gridPath.lineTo (projectIsometricPoint (x, getSurfaceDepth(), 0, boardArea));
+    }
+
+    for (int y = 0; y <= getSurfaceDepth(); y += gridStep)
+    {
+        gridPath.startNewSubPath (projectIsometricPoint (0, y, 0, boardArea));
+        gridPath.lineTo (projectIsometricPoint (getSurfaceWidth(), y, 0, boardArea));
+    }
+
+    g.setColour (juce::Colour::fromRGBA (95, 122, 214, 34));
+    g.strokePath (gridPath, juce::PathStrokeType (1.1f));
+
+    struct Direction
+    {
+        int dx = 0;
+        int dy = 0;
+    };
+
+    struct FilledVoxel
+    {
+        int x = 0;
+        int y = 0;
+        int z = 0;
+        int block = 0;
+    };
+
+    auto isEmpty = [&] (int x, int y, int z)
+    {
+        return ! juce::isPositiveAndBelow (x, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (y, getSurfaceDepth())
+            || ! juce::isPositiveAndBelow (z, getSurfaceHeight())
+            || activePlanetState->getBlock (x, y, z) == 0;
+    };
+
+    Direction leftFaceDirection;
+    Direction rightFaceDirection;
+    bool hasLeftFaceDirection = false;
+    bool hasRightFaceDirection = false;
+    const std::array<Direction, 4> cardinalDirections { Direction { 1, 0 }, Direction { -1, 0 }, Direction { 0, 1 }, Direction { 0, -1 } };
+    const auto rotatedOrigin = rotateIsometricXY (0, 0);
+
+    for (const auto& direction : cardinalDirections)
+    {
+        const auto rotatedNeighbour = rotateIsometricXY (direction.dx, direction.dy);
+        const int rx = rotatedNeighbour.x - rotatedOrigin.x;
+        const int ry = rotatedNeighbour.y - rotatedOrigin.y;
+        const float screenDx = (static_cast<float> (rx - ry) * refIsoTileWidth * isometricCamera.zoom) * 0.5f;
+        const float screenDy = (static_cast<float> (rx + ry) * refIsoTileHeight * isometricCamera.zoom) * 0.5f;
+
+        if (screenDy <= 0.0f)
+            continue;
+
+        if (screenDx < 0.0f)
+        {
+            leftFaceDirection = direction;
+            hasLeftFaceDirection = true;
+        }
+        else if (screenDx > 0.0f)
+        {
+            rightFaceDirection = direction;
+            hasRightFaceDirection = true;
+        }
+    }
+
+    std::vector<FilledVoxel> renderVoxels;
+    renderVoxels.reserve (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth() * getSurfaceHeight()));
+    for (int z = 0; z < getSurfaceHeight(); ++z)
+        for (int y = 0; y < getSurfaceDepth(); ++y)
+            for (int x = 0; x < getSurfaceWidth(); ++x)
+                if (const auto block = activePlanetState->getBlock (x, y, z); block != 0)
+                    renderVoxels.push_back ({ x, y, z, block });
+
+    std::sort (renderVoxels.begin(), renderVoxels.end(),
+               [this] (const FilledVoxel& a, const FilledVoxel& b)
+               {
+                   const auto ra = rotateIsometricXY (a.x, a.y);
+                   const auto rb = rotateIsometricXY (b.x, b.y);
+                   const int depthA = ra.x + ra.y + a.z * 2;
+                   const int depthB = rb.x + rb.y + b.z * 2;
+                   if (depthA != depthB)
+                       return depthA < depthB;
+                   if (a.z != b.z)
+                       return a.z < b.z;
+                   if (a.y != b.y)
+                       return a.y < b.y;
+                   return a.x < b.x;
+               });
+
+    for (const auto& voxel : renderVoxels)
+    {
+                const int x = voxel.x;
+                const int y = voxel.y;
+                const int z = voxel.z;
+                const auto aBottom = projectIsometricPoint (x,     y,     z, boardArea);
+                const auto bBottom = projectIsometricPoint (x + 1, y,     z, boardArea);
+                const auto cBottom = projectIsometricPoint (x + 1, y + 1, z, boardArea);
+                const auto dBottom = projectIsometricPoint (x,     y + 1, z, boardArea);
+                const auto aTop = projectIsometricPoint (x,     y,     z + 1, boardArea);
+                const auto bTop = projectIsometricPoint (x + 1, y,     z + 1, boardArea);
+                const auto cTop = projectIsometricPoint (x + 1, y + 1, z + 1, boardArea);
+                const auto dTop = projectIsometricPoint (x,     y + 1, z + 1, boardArea);
+
+                const bool showTop = (z == getSurfaceHeight() - 1) || isEmpty (x, y, z + 1);
+                const bool showLeft = hasLeftFaceDirection
+                                      ? isEmpty (x + leftFaceDirection.dx, y + leftFaceDirection.dy, z)
+                                      : true;
+                const bool showRight = hasRightFaceDirection
+                                       ? isEmpty (x + rightFaceDirection.dx, y + rightFaceDirection.dy, z)
+                                       : true;
+
+                const auto colour = getNoteColourForLayer (z);
+                bool selected = false;
+                if (x == builderCursorX && y == builderCursorY)
+                {
+                    const auto intervals = getActiveChordStackIntervals();
+                    for (const int interval : intervals)
+                        if (z == builderLayer + interval)
+                            {
+                                selected = true;
+                                break;
+                            }
+                }
+
+                juce::Path topFace;
+                if (showTop)
+                {
+                    topFace.startNewSubPath (aTop);
+                    topFace.lineTo (bTop);
+                    topFace.lineTo (cTop);
+                    topFace.lineTo (dTop);
+                    topFace.closeSubPath();
+                }
+
+                auto buildSideFace = [] (const Direction& direction,
+                                         const juce::Point<float>& aTopPoint,
+                                         const juce::Point<float>& bTopPoint,
+                                         const juce::Point<float>& cTopPoint,
+                                         const juce::Point<float>& dTopPoint,
+                                         const juce::Point<float>& aBottomPoint,
+                                         const juce::Point<float>& bBottomPoint,
+                                         const juce::Point<float>& cBottomPoint,
+                                         const juce::Point<float>& dBottomPoint)
+                {
+                    juce::Path path;
+                    if (direction.dx == -1 && direction.dy == 0)
+                    {
+                        path.startNewSubPath (aTopPoint);
+                        path.lineTo (dTopPoint);
+                        path.lineTo (dBottomPoint);
+                        path.lineTo (aBottomPoint);
+                    }
+                    else if (direction.dx == 1 && direction.dy == 0)
+                    {
+                        path.startNewSubPath (bTopPoint);
+                        path.lineTo (cTopPoint);
+                        path.lineTo (cBottomPoint);
+                        path.lineTo (bBottomPoint);
+                    }
+                    else if (direction.dx == 0 && direction.dy == -1)
+                    {
+                        path.startNewSubPath (aTopPoint);
+                        path.lineTo (bTopPoint);
+                        path.lineTo (bBottomPoint);
+                        path.lineTo (aBottomPoint);
+                    }
+                    else
+                    {
+                        path.startNewSubPath (dTopPoint);
+                        path.lineTo (cTopPoint);
+                        path.lineTo (cBottomPoint);
+                        path.lineTo (dBottomPoint);
+                    }
+
+                    path.closeSubPath();
+                    return path;
+                };
+
+                juce::Path leftFace;
+                if (showLeft)
+                    leftFace = buildSideFace (leftFaceDirection, aTop, bTop, cTop, dTop, aBottom, bBottom, cBottom, dBottom);
+
+                juce::Path rightFace;
+                if (showRight)
+                    rightFace = buildSideFace (rightFaceDirection, aTop, bTop, cTop, dTop, aBottom, bBottom, cBottom, dBottom);
+
+                juce::Path edgePath;
+                if (showTop)
+                {
+                    edgePath.startNewSubPath (aTop);
+                    edgePath.lineTo (bTop);
+                    edgePath.lineTo (cTop);
+                    edgePath.lineTo (dTop);
+                    edgePath.closeSubPath();
+                }
+                if (showLeft)
+                {
+                    if (leftFaceDirection.dx == -1 && leftFaceDirection.dy == 0)
+                    {
+                        edgePath.startNewSubPath (aTop);
+                        edgePath.lineTo (aBottom);
+                        edgePath.lineTo (dBottom);
+                        edgePath.lineTo (dTop);
+                    }
+                    else if (leftFaceDirection.dx == 1 && leftFaceDirection.dy == 0)
+                    {
+                        edgePath.startNewSubPath (bTop);
+                        edgePath.lineTo (bBottom);
+                        edgePath.lineTo (cBottom);
+                        edgePath.lineTo (cTop);
+                    }
+                    else if (leftFaceDirection.dx == 0 && leftFaceDirection.dy == -1)
+                    {
+                        edgePath.startNewSubPath (aTop);
+                        edgePath.lineTo (aBottom);
+                        edgePath.lineTo (bBottom);
+                        edgePath.lineTo (bTop);
+                    }
+                    else
+                    {
+                        edgePath.startNewSubPath (dTop);
+                        edgePath.lineTo (dBottom);
+                        edgePath.lineTo (cBottom);
+                        edgePath.lineTo (cTop);
+                    }
+                }
+                if (showRight)
+                {
+                    if (rightFaceDirection.dx == -1 && rightFaceDirection.dy == 0)
+                    {
+                        edgePath.startNewSubPath (aTop);
+                        edgePath.lineTo (aBottom);
+                        edgePath.lineTo (dBottom);
+                        edgePath.lineTo (dTop);
+                    }
+                    else if (rightFaceDirection.dx == 1 && rightFaceDirection.dy == 0)
+                    {
+                        edgePath.startNewSubPath (bTop);
+                        edgePath.lineTo (bBottom);
+                        edgePath.lineTo (cBottom);
+                        edgePath.lineTo (cTop);
+                    }
+                    else if (rightFaceDirection.dx == 0 && rightFaceDirection.dy == -1)
+                    {
+                        edgePath.startNewSubPath (aTop);
+                        edgePath.lineTo (aBottom);
+                        edgePath.lineTo (bBottom);
+                        edgePath.lineTo (bTop);
+                    }
+                    else
+                    {
+                        edgePath.startNewSubPath (dTop);
+                        edgePath.lineTo (dBottom);
+                        edgePath.lineTo (cBottom);
+                        edgePath.lineTo (cTop);
+                    }
+                }
+
+                if (showTop)
+                {
+                    g.setColour (colour.interpolatedWith (juce::Colours::white, 0.52f).withAlpha (0.10f));
+                    g.fillPath (topFace);
+                    g.setColour (colour.interpolatedWith (juce::Colours::white, 0.15f));
+                    g.fillPath (topFace);
+                    if (((x + y + z) % 9) == 0)
+                    {
+                        const auto centre = topFace.getBounds().getCentre();
+                        g.setColour (juce::Colour::fromRGBA (255, 255, 255, static_cast<uint8_t> (18 + 20 * juicePulse)));
+                        g.fillEllipse (juce::Rectangle<float> (3.0f + 2.0f * juicePulse, 3.0f + 2.0f * juicePulse).withCentre (centre));
+                    }
+                }
+                if (showLeft)
+                {
+                    g.setColour (colour.darker (0.12f));
+                    g.fillPath (leftFace);
+                }
+                if (showRight)
+                {
+                    g.setColour (colour.darker (0.28f));
+                    g.fillPath (rightFace);
+                }
+                g.setColour (juce::Colour::fromRGBA (8, 10, 20, static_cast<uint8_t> (138 - 36 * beatPulse)));
+                g.strokePath (edgePath, juce::PathStrokeType (1.0f));
+
+                if (selected)
+                {
+                    g.setColour (juce::Colour::fromFloatRGBA (0.35f, 0.96f, 1.0f, 0.92f));
+                    if (showTop)
+                        g.strokePath (topFace, juce::PathStrokeType (2.4f));
+                    if (showLeft)
+                        g.strokePath (leftFace, juce::PathStrokeType (1.5f));
+                    if (showRight)
+                        g.strokePath (rightFace, juce::PathStrokeType (1.5f));
+                }
+    }
+
+    auto makeFootprint = [&] (int x, int y, int z)
+    {
+        juce::Path path;
+        path.startNewSubPath (projectIsometricPoint (x,     y,     z, boardArea));
+        path.lineTo (projectIsometricPoint (x + 1, y,     z, boardArea));
+        path.lineTo (projectIsometricPoint (x + 1, y + 1, z, boardArea));
+        path.lineTo (projectIsometricPoint (x,     y + 1, z, boardArea));
+        path.closeSubPath();
+        return path;
+    };
+
+    auto makeFootprintCentre = [&] (int x, int y, int z)
+    {
+        const auto a = projectIsometricPoint (x,     y,     z, boardArea);
+        const auto b = projectIsometricPoint (x + 1, y,     z, boardArea);
+        const auto c = projectIsometricPoint (x + 1, y + 1, z, boardArea);
+        const auto d = projectIsometricPoint (x,     y + 1, z, boardArea);
+
+        return juce::Point<float> ((a.x + b.x + c.x + d.x) * 0.25f,
+                                   (a.y + b.y + c.y + d.y) * 0.25f);
+    };
+
+    if (juce::isPositiveAndBelow (builderCursorX, getSurfaceWidth())
+        && juce::isPositiveAndBelow (builderCursorY, getSurfaceDepth()))
+    {
+        const auto intervals = getActiveChordStackIntervals();
+        int highestZ = builderLayer;
+        for (const int interval : intervals)
+            if (const int noteZ = builderLayer + interval; juce::isPositiveAndBelow (noteZ, getSurfaceHeight()))
+                highestZ = juce::jmax (highestZ, noteZ);
+
+        const int floorLayer = 0;
+        const int baseLayer = juce::jmax (0, builderLayer);
+        const int topLayer = highestZ + 1;
+        auto floorFootprint = makeFootprint (builderCursorX, builderCursorY, floorLayer);
+        auto baseIndicator = makeFootprint (builderCursorX, builderCursorY, baseLayer);
+        auto indicator = makeFootprint (builderCursorX, builderCursorY, topLayer);
+        const auto indicatorBounds = indicator.getBounds().expanded (10.0f + 4.0f * beatPulse);
+        const auto floorCentre = makeFootprintCentre (builderCursorX, builderCursorY, floorLayer);
+        const auto baseCentre = makeFootprintCentre (builderCursorX, builderCursorY, baseLayer);
+        const auto topCentre = makeFootprintCentre (builderCursorX, builderCursorY, topLayer);
+
+        juce::Path heightBeam;
+        heightBeam.startNewSubPath (floorCentre);
+        heightBeam.lineTo (baseCentre);
+        heightBeam.lineTo (topCentre);
+
+        g.setColour (juce::Colour::fromFloatRGBA (0.16f, 0.95f, 1.0f, 0.16f));
+        g.fillPath (floorFootprint);
+        g.setColour (juce::Colour::fromFloatRGBA (0.55f, 0.97f, 1.0f, 0.72f));
+        g.strokePath (floorFootprint, juce::PathStrokeType (2.0f));
+
+        if (baseLayer > 0)
+        {
+            g.setColour (juce::Colour::fromFloatRGBA (0.14f, 0.96f, 1.0f, 0.10f));
+            g.fillPath (baseIndicator);
+            g.setColour (juce::Colour::fromFloatRGBA (0.55f, 0.97f, 1.0f, 0.58f));
+            g.strokePath (baseIndicator, juce::PathStrokeType (1.8f));
+        }
+
+        g.setColour (juce::Colour::fromFloatRGBA (0.22f, 0.96f, 1.0f, 0.28f + 0.16f * beatPulse));
+        g.strokePath (heightBeam, juce::PathStrokeType (8.0f + 2.0f * beatPulse,
+                                                        juce::PathStrokeType::curved,
+                                                        juce::PathStrokeType::rounded));
+        g.setColour (juce::Colour::fromFloatRGBA (1.0f, 1.0f, 1.0f, 0.92f));
+        g.strokePath (heightBeam, juce::PathStrokeType (2.0f,
+                                                        juce::PathStrokeType::curved,
+                                                        juce::PathStrokeType::rounded));
+
+        g.setColour (juce::Colour::fromFloatRGBA (0.14f, 0.96f, 1.0f, 0.12f + 0.10f * beatPulse));
+        g.fillEllipse (indicatorBounds);
+        g.setColour (juce::Colour::fromFloatRGBA (1.0f, 0.62f, 0.14f, 0.20f));
+        g.fillPath (indicator);
+        g.setColour (juce::Colour::fromFloatRGBA (0.10f, 0.95f, 1.0f, 0.96f));
+        g.strokePath (indicator, juce::PathStrokeType (3.2f + beatPulse * 1.2f));
+        g.setColour (juce::Colour::fromFloatRGBA (1.0f, 1.0f, 1.0f, 0.95f));
+        g.strokePath (indicator, juce::PathStrokeType (1.2f));
+    }
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 230));
+    g.strokePath (footprintTopOutline, juce::PathStrokeType (1.6f));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 92));
+    g.strokePath (floorPlane, juce::PathStrokeType (1.1f));
+}
+
+void GameComponent::drawHotbar (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const auto bar = getHotbarBoundsForGridArea (area);
+    auto chordBadge = bar.translated (0.0f, -38.0f).withHeight (28.0f);
+    g.setColour (juce::Colour::fromRGBA (14, 22, 48, 238));
+    g.fillRoundedRectangle (chordBadge, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 22));
+    g.fillRoundedRectangle (chordBadge.reduced (3.0f, 3.0f).withHeight (chordBadge.getHeight() * 0.34f), 4.0f);
+    g.setColour (juce::Colour::fromRGBA (124, 192, 255, 118));
+    g.drawRoundedRectangle (chordBadge, 8.0f, 1.2f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (12.5f));
+    g.drawText ("Chord  " + getIsometricChordName(), chordBadge.toNearestInt(), juce::Justification::centred);
+
+    g.setColour (juce::Colour::fromRGBA (12, 18, 40, 238));
+    g.fillRoundedRectangle (bar, 10.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
+    g.fillRoundedRectangle (bar.reduced (4.0f, 4.0f).withHeight (bar.getHeight() * 0.18f), 4.0f);
+    g.setColour (juce::Colour::fromRGBA (124, 192, 255, 118));
+    g.drawRoundedRectangle (bar, 10.0f, 1.3f);
+
+    const std::array<juce::String, 4> labels { "x1", "x2", "x3", "x4" };
+    for (int blockType = 1; blockType <= 4; ++blockType)
+    {
+        auto slot = getHotbarSlotBounds (area, blockType);
+        const bool selected = isometricPlacementHeight == blockType;
+        g.setColour (selected ? juce::Colour::fromRGBA (255, 188, 118, 98)
+                              : juce::Colour::fromRGBA (18, 30, 58, 220));
+        g.fillRoundedRectangle (slot, 8.0f);
+        g.setColour (selected ? juce::Colour::fromRGBA (255, 228, 176, 220)
+                              : juce::Colour::fromRGBA (104, 190, 255, 56));
+        g.drawRoundedRectangle (slot, 8.0f, selected ? 1.8f : 1.2f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, selected ? 30 : 16));
+        g.fillRoundedRectangle (slot.reduced (3.0f, 3.0f).withHeight (slot.getHeight() * 0.20f), 3.0f);
+
+        auto preview = slot.reduced (10.0f, 7.0f);
+        auto swatch = preview.removeFromTop (preview.getHeight() * 0.56f);
+        g.setColour (getNoteColourForLayer (juce::jlimit (0, getSurfaceHeight() - 1, builderLayer + blockType - 1)));
+        g.fillRoundedRectangle (swatch, 4.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.22f));
+        g.drawRoundedRectangle (swatch, 4.0f, 1.0f);
+
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText (labels[static_cast<size_t> (blockType - 1)],
+                    preview.toNearestInt(), juce::Justification::centred);
+    }
+}
+
+void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const auto target = findFirstPersonTarget();
+    juce::ColourGradient skyGradient (juce::Colour (0xff726859), static_cast<float> (area.getCentreX()), static_cast<float> (area.getY()),
+                                      juce::Colour (0xff2c241e), static_cast<float> (area.getCentreX()), static_cast<float> (area.getBottom()), false);
+    skyGradient.addColour (0.58, juce::Colour (0xff51463a));
+    g.setGradientFill (skyGradient);
+    g.fillRect (area);
+
+    auto lowerBand = area.withTrimmedTop (static_cast<int> (area.getHeight() * 0.58f));
+    juce::ColourGradient groundFade (juce::Colour (0x00000000), static_cast<float> (lowerBand.getCentreX()), static_cast<float> (lowerBand.getY()),
+                                     juce::Colour (0xaa100c09), static_cast<float> (lowerBand.getCentreX()), static_cast<float> (lowerBand.getBottom()), false);
+    g.setGradientFill (groundFade);
+    g.fillRect (lowerBand);
+
+    const float centreX = static_cast<float> (area.getCentreX());
+    const float centreY = static_cast<float> (area.getCentreY());
+    const float projectionScale = static_cast<float> (area.getWidth()) * 0.9f;
+    const float camX = firstPersonState.x;
+    const float camY = firstPersonState.y;
+    const float camZ = firstPersonState.eyeZ;
+    const float cosYaw = std::cos (firstPersonState.yaw);
+    const float sinYaw = std::sin (firstPersonState.yaw);
+    const float cosPitch = std::cos (firstPersonState.pitch);
+    const float sinPitch = std::sin (firstPersonState.pitch);
+
+    struct Vec3
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+    };
+
+    struct FaceDraw
+    {
+        juce::Path path;
+        std::array<Vec3, 4> corners;
+        float depth = 0.0f;
+        int blockType = 0;
+        int zLayer = 0;
+        float brightness = 1.0f;
+        bool topFace = false;
+        bool bottomFace = false;
+        bool targeted = false;
+    };
+
+    std::vector<FaceDraw> faces;
+    faces.reserve (512);
+
+    auto projectPoint = [&] (float wx, float wy, float wz, juce::Point<float>& out) -> std::optional<float>
+    {
+        const float relX = wx - camX;
+        const float relY = wy - camY;
+        const float relZ = wz - camZ;
+        const float yawX = relX * cosYaw - relY * sinYaw;
+        const float yawY = relX * sinYaw + relY * cosYaw;
+        const float camSpaceY = relZ * cosPitch - yawY * sinPitch;
+        const float depth = relZ * sinPitch + yawY * cosPitch;
+        if (depth <= 0.05f)
+            return std::nullopt;
+
+        out.x = centreX + (yawX / depth) * projectionScale;
+        out.y = centreY - (camSpaceY / depth) * projectionScale;
+        return depth;
+    };
+
+    auto addFace = [&] (const std::array<Vec3, 4>& corners, int blockType, int zLayer, float brightness, bool topFace, bool bottomFace, bool targetedFace)
+    {
+        FaceDraw face;
+        face.corners = corners;
+        face.blockType = blockType;
+        face.zLayer = zLayer;
+        face.brightness = brightness;
+        face.topFace = topFace;
+        face.bottomFace = bottomFace;
+        face.targeted = targetedFace;
+
+        bool first = true;
+        float depthSum = 0.0f;
+        for (const auto& corner : corners)
+        {
+            juce::Point<float> projected;
+            auto depth = projectPoint (corner.x, corner.y, corner.z, projected);
+            if (! depth.has_value())
+                return;
+
+            depthSum += *depth;
+            if (first)
+            {
+                face.path.startNewSubPath (projected);
+                first = false;
+            }
+            else
+            {
+                face.path.lineTo (projected);
+            }
+        }
+
+        face.path.closeSubPath();
+        face.depth = depthSum * 0.25f;
+        faces.push_back (std::move (face));
+    };
+
+    for (int z = 0; z < getSurfaceHeight(); ++z)
+    {
+        for (int y = 0; y < getSurfaceDepth(); ++y)
+        {
+            for (int x = 0; x < getSurfaceWidth(); ++x)
+            {
+                const auto block = activePlanetState->getBlock (x, y, z);
+                if (block == 0)
+                    continue;
+
+                const float distance = std::abs (static_cast<float> (x) - camX)
+                                     + std::abs (static_cast<float> (y) - camY)
+                                     + std::abs (static_cast<float> (z) - camZ);
+                if (distance > 33.0f)
+                    continue;
+
+                const bool targetedBlock = target.valid && x == target.hitX && y == target.hitY && z == target.hitZ;
+
+                auto emptyAt = [&] (int nx, int ny, int nz)
+                {
+                    return ! juce::isPositiveAndBelow (nx, getSurfaceWidth())
+                        || ! juce::isPositiveAndBelow (ny, getSurfaceDepth())
+                        || ! juce::isPositiveAndBelow (nz, getSurfaceHeight())
+                        || activePlanetState->getBlock (nx, ny, nz) == 0;
+                };
+
+                if (emptyAt (x, y, z + 1))
+                {
+                    addFace ({ Vec3 { static_cast<float> (x),     static_cast<float> (y),     static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y),     static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x),     static_cast<float> (y + 1), static_cast<float> (z + 1) } },
+                             block, z, 1.0f, true, false, targetedBlock);
+                }
+
+                if (emptyAt (x, y, z - 1))
+                {
+                    addFace ({ Vec3 { static_cast<float> (x),     static_cast<float> (y + 1), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y),     static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x),     static_cast<float> (y),     static_cast<float> (z) } },
+                             block, z, 0.48f, false, true, targetedBlock);
+                }
+
+                if (emptyAt (x, y - 1, z))
+                    addFace ({ Vec3 { static_cast<float> (x),     static_cast<float> (y), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y), static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x),     static_cast<float> (y), static_cast<float> (z + 1) } },
+                             block, z, 0.82f, false, false, targetedBlock);
+                if (emptyAt (x + 1, y, z))
+                    addFace ({ Vec3 { static_cast<float> (x + 1), static_cast<float> (y),     static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y),     static_cast<float> (z + 1) } },
+                             block, z, 0.62f, false, false, targetedBlock);
+                if (emptyAt (x, y + 1, z))
+                    addFace ({ Vec3 { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x),     static_cast<float> (y + 1), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x),     static_cast<float> (y + 1), static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z + 1) } },
+                             block, z, 0.82f, false, false, targetedBlock);
+                if (emptyAt (x - 1, y, z))
+                    addFace ({ Vec3 { static_cast<float> (x), static_cast<float> (y + 1), static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x), static_cast<float> (y),     static_cast<float> (z) },
+                               Vec3 { static_cast<float> (x), static_cast<float> (y),     static_cast<float> (z + 1) },
+                               Vec3 { static_cast<float> (x), static_cast<float> (y + 1), static_cast<float> (z + 1) } },
+                             block, z, 0.62f, false, false, targetedBlock);
+            }
+        }
+    }
+
+    std::sort (faces.begin(), faces.end(), [] (const FaceDraw& a, const FaceDraw& b) { return a.depth > b.depth; });
+
+    auto drawStableFirstPersonFace = [&] (const FaceDraw& face)
+    {
+        const auto noteBase = getNoteColourForLayer (face.zLayer);
+        const auto materialTint = getBlockColour (face.blockType);
+        const auto base = noteBase.interpolatedWith (materialTint, 0.18f).withMultipliedBrightness (face.brightness);
+
+        auto sampleColour = [&] (int uIndex, int vIndex)
+        {
+            const int hash = (uIndex * 92821) ^ (vIndex * 68917) ^ (face.blockType * 101) ^ (face.zLayer * 53);
+            auto sample = base;
+
+            if (face.blockType == 1)
+                sample = sample.withMultipliedBrightness ((hash & 1) == 0 ? 0.82f : 1.08f);
+            else if (face.blockType == 2)
+                sample = sample.interpolatedWith (juce::Colours::white, (hash & 3) == 0 ? 0.18f : 0.05f);
+            else if (face.blockType == 3)
+                sample = sample.withMultipliedBrightness ((hash & 2) == 0 ? 0.90f : 1.12f);
+            else if (face.blockType == 4)
+                sample = sample.interpolatedWith (juce::Colours::darkgreen, (hash & 1) == 0 ? 0.18f : 0.05f);
+
+            return sample;
+        };
+
+        auto bilerp = [] (const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, float u, float v)
+        {
+            const auto lerpVec = [] (const Vec3& p0, const Vec3& p1, float t)
+            {
+                return Vec3 { p0.x + (p1.x - p0.x) * t,
+                              p0.y + (p1.y - p0.y) * t,
+                              p0.z + (p1.z - p0.z) * t };
+            };
+
+            const auto ab = lerpVec (a, b, u);
+            const auto dc = lerpVec (d, c, u);
+            return lerpVec (ab, dc, v);
+        };
+
+        constexpr int subdivisions = 6;
+        for (int vy = 0; vy < subdivisions; ++vy)
+        {
+            const float v0 = static_cast<float> (vy) / static_cast<float> (subdivisions);
+            const float v1 = static_cast<float> (vy + 1) / static_cast<float> (subdivisions);
+
+            for (int ux = 0; ux < subdivisions; ++ux)
+            {
+                const float u0 = static_cast<float> (ux) / static_cast<float> (subdivisions);
+                const float u1 = static_cast<float> (ux + 1) / static_cast<float> (subdivisions);
+
+                const auto p00 = bilerp (face.corners[0], face.corners[1], face.corners[2], face.corners[3], u0, v0);
+                const auto p10 = bilerp (face.corners[0], face.corners[1], face.corners[2], face.corners[3], u1, v0);
+                const auto p11 = bilerp (face.corners[0], face.corners[1], face.corners[2], face.corners[3], u1, v1);
+                const auto p01 = bilerp (face.corners[0], face.corners[1], face.corners[2], face.corners[3], u0, v1);
+
+                juce::Point<float> q00, q10, q11, q01;
+                if (! projectPoint (p00.x, p00.y, p00.z, q00).has_value()
+                    || ! projectPoint (p10.x, p10.y, p10.z, q10).has_value()
+                    || ! projectPoint (p11.x, p11.y, p11.z, q11).has_value()
+                    || ! projectPoint (p01.x, p01.y, p01.z, q01).has_value())
+                    continue;
+
+                juce::Path quad;
+                quad.startNewSubPath (q00);
+                quad.lineTo (q10);
+                quad.lineTo (q11);
+                quad.lineTo (q01);
+                quad.closeSubPath();
+
+                g.setColour (sampleColour (ux, vy));
+                g.fillPath (quad);
+            }
+        }
+
+        g.setColour (juce::Colours::black.withAlpha (face.topFace ? 0.05f : (face.bottomFace ? 0.18f : 0.14f)));
+        g.strokePath (face.path, juce::PathStrokeType (1.0f));
+    };
+
+    for (const auto& face : faces)
+    {
+        drawStableFirstPersonFace (face);
+
+        if (face.targeted)
+        {
+            g.setColour (juce::Colour (0xfffff0d6));
+            g.strokePath (face.path, juce::PathStrokeType (2.0f));
+        }
+    }
+
+    auto drawWireBox = [&] (int x, int y, int z, juce::Colour colour)
+    {
+        const std::array<Vec3, 8> corners {{
+            { static_cast<float> (x),     static_cast<float> (y),     static_cast<float> (z) },
+            { static_cast<float> (x + 1), static_cast<float> (y),     static_cast<float> (z) },
+            { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z) },
+            { static_cast<float> (x),     static_cast<float> (y + 1), static_cast<float> (z) },
+            { static_cast<float> (x),     static_cast<float> (y),     static_cast<float> (z + 1) },
+            { static_cast<float> (x + 1), static_cast<float> (y),     static_cast<float> (z + 1) },
+            { static_cast<float> (x + 1), static_cast<float> (y + 1), static_cast<float> (z + 1) },
+            { static_cast<float> (x),     static_cast<float> (y + 1), static_cast<float> (z + 1) }
+        }};
+
+        std::array<juce::Point<float>, 8> projected;
+        for (size_t i = 0; i < corners.size(); ++i)
+            if (! projectPoint (corners[i].x, corners[i].y, corners[i].z, projected[i]).has_value())
+                return;
+
+        const std::array<std::pair<int, int>, 12> edges {{
+            { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+            { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+            { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+        }};
+
+        g.setColour (colour.withAlpha (0.22f));
+        juce::Path fillPath;
+        fillPath.startNewSubPath (projected[4]);
+        fillPath.lineTo (projected[5]);
+        fillPath.lineTo (projected[6]);
+        fillPath.lineTo (projected[7]);
+        fillPath.closeSubPath();
+        g.fillPath (fillPath);
+
+        g.setColour (colour);
+        for (const auto& edge : edges)
+            g.drawLine ({ projected[static_cast<size_t> (edge.first)], projected[static_cast<size_t> (edge.second)] }, 1.6f);
+    };
+
+    if (target.valid
+        && juce::isPositiveAndBelow (target.placeX, getSurfaceWidth())
+        && juce::isPositiveAndBelow (target.placeY, getSurfaceDepth())
+        && juce::isPositiveAndBelow (target.placeZ, getSurfaceHeight()))
+        drawWireBox (target.placeX, target.placeY, target.placeZ, juce::Colour::fromFloatRGBA (0.14f, 0.95f, 1.0f, 0.92f));
+
+    drawHotbar (g, area);
+
+    const float crosshairPulse = 0.55f + 0.45f * std::sin (transportPhase * juce::MathConstants<float>::twoPi * 8.0f);
+    const float crosshairSize = 8.0f + crosshairPulse * 2.0f;
+    g.setColour (juce::Colours::white);
+    g.drawLine (centreX - crosshairSize, centreY,
+                centreX + crosshairSize, centreY, 1.6f);
+    g.drawLine (centreX, centreY - crosshairSize,
+                centreX, centreY + crosshairSize, 1.6f);
+}
+
+void GameComponent::drawTexturedCube (juce::Graphics& g, juce::Point<float> origin, float halfWidth, float halfHeight, int blockType, bool selected) const
+{
+    juce::Path top;
+    top.startNewSubPath (origin.x, origin.y - halfHeight);
+    top.lineTo (origin.x + halfWidth, origin.y);
+    top.lineTo (origin.x, origin.y + halfHeight);
+    top.lineTo (origin.x - halfWidth, origin.y);
+    top.closeSubPath();
+
+    juce::Path left;
+    left.startNewSubPath (origin.x - halfWidth, origin.y);
+    left.lineTo (origin.x, origin.y + halfHeight);
+    left.lineTo (origin.x, origin.y + halfHeight + halfWidth);
+    left.lineTo (origin.x - halfWidth, origin.y + halfWidth);
+    left.closeSubPath();
+
+    juce::Path right;
+    right.startNewSubPath (origin.x + halfWidth, origin.y);
+    right.lineTo (origin.x, origin.y + halfHeight);
+    right.lineTo (origin.x, origin.y + halfHeight + halfWidth);
+    right.lineTo (origin.x + halfWidth, origin.y + halfWidth);
+    right.closeSubPath();
+
+    fillTexturedDiamond (g, right, blockType, builderLayer, 0.62f, false);
+    fillTexturedDiamond (g, left, blockType, builderLayer, 0.46f, false);
+    fillTexturedDiamond (g, top, blockType, builderLayer, 1.0f, true);
+
+    g.setColour (juce::Colour (0x40000000));
+    g.strokePath (left, juce::PathStrokeType (1.0f));
+    g.strokePath (right, juce::PathStrokeType (1.0f));
+    g.strokePath (top, juce::PathStrokeType (1.0f));
+
+    if (selected)
+    {
+        fillGlow (g, juce::Rectangle<float> (origin.x - halfWidth * 1.8f, origin.y - halfHeight * 2.0f,
+                                             halfWidth * 3.6f, halfWidth * 3.2f),
+                  juce::Colour (0xffffd298), 0.20f);
+        g.setColour (juce::Colour (0xfffff0dc));
+        g.strokePath (top, juce::PathStrokeType (2.0f));
+        g.strokePath (left, juce::PathStrokeType (1.5f));
+        g.strokePath (right, juce::PathStrokeType (1.5f));
+    }
+}
+
+void GameComponent::fillTexturedDiamond (juce::Graphics& g, const juce::Path& path, int blockType, int zLayer, float brightness, bool topFace) const
+{
+    auto bounds = path.getBounds();
+    g.saveState();
+    g.reduceClipRegion (path, {});
+    fillTexturedRect (g, bounds, blockType, zLayer, brightness, topFace);
+    g.setColour (juce::Colours::black.withAlpha (topFace ? 0.0f : 0.14f));
+    if (! topFace)
+        g.fillRect (bounds.removeFromBottom (bounds.getHeight() * 0.25f));
+    g.restoreState();
+}
+
+void GameComponent::fillTexturedRect (juce::Graphics& g, juce::Rectangle<float> area, int blockType, int zLayer, float brightness, bool topFace) const
+{
+    const auto noteBase = getNoteColourForLayer (zLayer);
+    const auto materialTint = getBlockColour (blockType);
+    const auto base = noteBase.interpolatedWith (materialTint, 0.18f).withMultipliedBrightness (brightness);
+    g.setColour (base);
+    g.fillRect (area);
+
+    g.saveState();
+    g.reduceClipRegion (area.toNearestInt());
+
+    const float tile = juce::jmax (3.0f, area.getWidth() / 6.0f);
+    for (float y = area.getY(); y < area.getBottom(); y += tile)
+    {
+        for (float x = area.getX(); x < area.getRight(); x += tile)
+        {
+            const int hash = (static_cast<int> (x * 10.0f) * 31) ^ (static_cast<int> (y * 10.0f) * 17) ^ (blockType * 101);
+            auto sample = base;
+
+            if (blockType == 1)
+                sample = sample.withMultipliedBrightness ((hash & 1) == 0 ? 0.82f : 1.08f);
+            else if (blockType == 2)
+                sample = sample.interpolatedWith (juce::Colours::white, (hash & 3) == 0 ? 0.18f : 0.05f);
+            else if (blockType == 3)
+                sample = sample.withMultipliedBrightness ((hash & 2) == 0 ? 0.90f : 1.12f);
+            else if (blockType == 4)
+                sample = sample.interpolatedWith (juce::Colours::darkgreen, (hash & 1) == 0 ? 0.18f : 0.05f);
+
+            g.setColour (sample);
+            g.fillRect (juce::Rectangle<float> (x, y, tile + 0.6f, tile + 0.6f));
+        }
+    }
+
+    if (topFace)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.10f));
+        for (float x = area.getX(); x < area.getRight(); x += tile * 2.0f)
+            g.drawLine (x, area.getY(), x + area.getHeight(), area.getBottom(), 1.0f);
+    }
+    else
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.12f));
+        for (float y = area.getY(); y < area.getBottom(); y += tile * 1.7f)
+            g.drawLine (area.getX(), y, area.getRight(), y, 1.0f);
+    }
+
+    g.restoreState();
+}
+
+juce::Colour GameComponent::getBlockColour (int blockType) const
+{
+    switch (blockType)
+    {
+        case 1: return juce::Colour (0xff5d4b3b);
+        case 2: return juce::Colour (0xff7ab6c8);
+        case 3: return juce::Colour (0xffd39a52);
+        case 4: return juce::Colour (0xff597b4b);
+        default: return juce::Colour (0xff0c0908);
+    }
+}
+
+juce::Colour GameComponent::getNoteColourForLayer (int zLayer) const
+{
+    if (zLayer <= 0)
+        return juce::Colour::fromRGB (72, 76, 88);
+
+    switch ((zLayer - 1) % 12)
+    {
+        case 0: return juce::Colour::fromRGB (247, 223, 67);
+        case 1: return juce::Colour::fromRGB (240, 147, 49);
+        case 2: return juce::Colour::fromRGB (78, 191, 104);
+        case 3: return juce::Colour::fromRGB (61, 210, 201);
+        case 4: return juce::Colour::fromRGB (138, 93, 214);
+        case 5: return juce::Colour::fromRGB (229, 78, 196);
+        case 6: return juce::Colour::fromRGB (232, 60, 56);
+        case 7: return juce::Colour::fromRGB (238, 100, 46);
+        case 8: return juce::Colour::fromRGB (214, 47, 47);
+        case 9: return juce::Colour::fromRGB (244, 155, 57);
+        case 10: return juce::Colour::fromRGB (248, 194, 70);
+        case 11: return juce::Colour::fromRGB (247, 173, 84);
+        default: break;
+    }
+
+    return juce::Colours::white;
+}
+
+juce::String GameComponent::getNoteNameForLayer (int zLayer) const
+{
+    if (zLayer <= 0)
+        return "No note";
+
+    static constexpr std::array<const char*, 12> names {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+
+    return names[static_cast<size_t> ((zLayer - 1) % 12)];
+}
+
+void GameComponent::stepPerformanceAgents()
+{
+    switch (performanceAgentMode)
+    {
+        case PerformanceAgentMode::snakes:
+        case PerformanceAgentMode::trains:
+            stepPerformanceSnakes();
+            break;
+        case PerformanceAgentMode::orbiters:
+            stepPerformanceOrbiters();
+            break;
+        case PerformanceAgentMode::automata:
+            stepPerformanceAutomata();
+            break;
+    }
+}
+
+void GameComponent::stepPerformanceSnakes()
+{
+    const auto bounds = getPerformanceRegionBounds();
+    static const std::array<juce::Point<int>, 4> snakeDirections { juce::Point<int> { 1, 0 }, juce::Point<int> { -1, 0 },
+                                                                   juce::Point<int> { 0, 1 }, juce::Point<int> { 0, -1 } };
+
+    auto inside = [&] (juce::Point<int> p) { return bounds.contains (p); };
+    auto occupiedByAnySnake = [&] (juce::Point<int> cell, int movingSnakeIndex)
+    {
+        for (int i = 0; i < static_cast<int> (performanceSnakes.size()); ++i)
+        {
+            const auto& other = performanceSnakes[static_cast<size_t> (i)];
+            for (size_t segment = 0; segment < other.body.size(); ++segment)
+            {
+                if (i == movingSnakeIndex && segment == other.body.size() - 1)
+                    continue;
+                if (other.body[segment] == cell)
+                    return true;
+            }
+        }
+
+        return false;
+    };
+
+    for (int snakeIndex = 0; snakeIndex < static_cast<int> (performanceSnakes.size()); ++snakeIndex)
+    {
+        auto& snake = performanceSnakes[static_cast<size_t> (snakeIndex)];
+        if (snake.body.empty())
+            continue;
+
+        if (performanceAgentMode == PerformanceAgentMode::trains)
+        {
+            const auto head = snake.body.front();
+            std::vector<juce::Point<int>> trackOptions;
+            for (const auto& dir : snakeDirections)
+            {
+                const auto candidate = head + dir;
+                if (! inside (candidate) || occupiedByAnySnake (candidate, snakeIndex))
+                    continue;
+                if (hasPerformanceTrackAt (candidate))
+                    trackOptions.push_back (dir);
+            }
+
+            if (! trackOptions.empty())
+            {
+                const auto switchDisc = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                                      [head] (const PerformanceDisc& disc) { return disc.cell == head; });
+                if (switchDisc != performanceDiscs.end()
+                    && std::find (trackOptions.begin(), trackOptions.end(), switchDisc->direction) != trackOptions.end())
+                {
+                    snake.direction = switchDisc->direction;
+                    performanceFlashes.push_back ({ head, juce::Colour::fromRGBA (255, 208, 112, 255), 0.72f, true });
+                }
+                else if (std::find (trackOptions.begin(), trackOptions.end(), snake.direction) == trackOptions.end())
+                {
+                    snake.direction = trackOptions.front();
+                }
+            }
+        }
+
+        auto nextHead = snake.body.front() + snake.direction;
+        if (! inside (nextHead) || occupiedByAnySnake (nextHead, snakeIndex))
+        {
+            if (snake.body.size() >= 2)
+            {
+                std::reverse (snake.body.begin(), snake.body.end());
+                snake.direction = snake.body.front() - snake.body[1];
+            }
+            else
+            {
+                snake.direction = { -snake.direction.x, -snake.direction.y };
+            }
+
+            nextHead = snake.body.front() + snake.direction;
+        }
+
+        if (! inside (nextHead) || occupiedByAnySnake (nextHead, snakeIndex))
+            continue;
+
+        if (const auto disc = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                            [nextHead] (const PerformanceDisc& reflector) { return reflector.cell == nextHead; });
+            disc != performanceDiscs.end())
+        {
+            snake.direction = disc->direction;
+            performanceFlashes.push_back ({ nextHead, juce::Colour::fromRGBA (255, 196, 96, 255), 1.0f, true });
+        }
+
+        snake.body.insert (snake.body.begin(), nextHead);
+        if (snake.body.size() > 7)
+            snake.body.pop_back();
+
+        if (snakeTriggerMode == SnakeTriggerMode::headOnly)
+        {
+            triggerPerformanceNotesAtCell (nextHead);
+        }
+        else
+        {
+            for (const auto& segment : snake.body)
+                triggerPerformanceNotesAtCell (segment);
+        }
+    }
+}
+
+void GameComponent::stepPerformanceOrbiters()
+{
+    const auto bounds = getPerformanceRegionBounds();
+    if (performanceOrbitCenters.empty())
+        performanceOrbitCenters.push_back (bounds.getCentre());
+
+    auto inside = [&] (juce::Point<int> p) { return bounds.contains (p); };
+    auto axisDir = [] (juce::Point<int> vector)
+    {
+        if (std::abs (vector.x) >= std::abs (vector.y))
+            return juce::Point<int> (vector.x < 0 ? -1 : 1, 0);
+        return juce::Point<int> (0, vector.y < 0 ? -1 : 1);
+    };
+
+    for (auto& orbiter : performanceSnakes)
+    {
+        if (orbiter.body.empty())
+            continue;
+
+        const auto centre = performanceOrbitCenters[static_cast<size_t> (orbiter.orbitIndex % static_cast<int> (performanceOrbitCenters.size()))];
+        const auto head = orbiter.body.front();
+        const auto delta = head - centre;
+        const int desiredRadius = 3 + (orbiter.orbitIndex % 4);
+        const int distanceSq = delta.x * delta.x + delta.y * delta.y;
+        const juce::Point<int> tangent = orbiter.clockwise ? juce::Point<int> (delta.y, -delta.x)
+                                                           : juce::Point<int> (-delta.y, delta.x);
+        juce::Point<int> direction = axisDir ((tangent.x == 0 && tangent.y == 0) ? juce::Point<int> (1, 0) : tangent);
+        if (distanceSq < desiredRadius * desiredRadius)
+            direction = axisDir ((delta.x == 0 && delta.y == 0) ? juce::Point<int> (1, 0) : delta);
+        else if (distanceSq > (desiredRadius + 1) * (desiredRadius + 1))
+            direction = axisDir ({ -delta.x, -delta.y });
+
+        auto next = head + direction;
+        if (! inside (next))
+        {
+            orbiter.clockwise = ! orbiter.clockwise;
+            const auto altTangent = orbiter.clockwise ? juce::Point<int> (delta.y, -delta.x)
+                                                      : juce::Point<int> (-delta.y, delta.x);
+            direction = axisDir ((altTangent.x == 0 && altTangent.y == 0) ? juce::Point<int> (1, 0) : altTangent);
+            next = head + direction;
+        }
+
+        if (! inside (next))
+            continue;
+
+        orbiter.direction = direction;
+        orbiter.body[0] = next;
+        triggerPerformanceNotesAtCell (next);
+    }
+}
+
+void GameComponent::stepPerformanceAutomata()
+{
+    const auto bounds = getPerformanceRegionBounds();
+    if (performanceAutomataCells.empty())
+    {
+        resetPerformanceAgents();
+        if (performanceAutomataCells.empty())
+            return;
+    }
+
+    std::unordered_map<int, int> neighbourCounts;
+    auto keyFor = [] (juce::Point<int> cell) { return (cell.y << 16) ^ cell.x; };
+    auto cellFor = [] (int key) { return juce::Point<int> (key & 0xffff, key >> 16); };
+
+    for (const auto& cell : performanceAutomataCells)
+    {
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+            {
+                if (dx == 0 && dy == 0)
+                    continue;
+                const juce::Point<int> n { cell.x + dx, cell.y + dy };
+                if (bounds.contains (n))
+                    ++neighbourCounts[keyFor (n)];
+            }
+    }
+
+    std::vector<juce::Point<int>> nextCells;
+    for (const auto& [key, count] : neighbourCounts)
+    {
+        const auto cell = cellFor (key);
+        const bool alive = std::find (performanceAutomataCells.begin(), performanceAutomataCells.end(), cell) != performanceAutomataCells.end();
+        if ((alive && (count == 2 || count == 3)) || (! alive && count == 3))
+            nextCells.push_back (cell);
+    }
+
+    if (nextCells.empty())
+    {
+        resetPerformanceAgents();
+        return;
+    }
+
+    performanceAutomataCells = nextCells;
+    for (const auto& cell : performanceAutomataCells)
+        triggerPerformanceNotesAtCell (cell);
+}
+
+void GameComponent::timerCallback()
+{
+    for (auto it = performanceFlashes.begin(); it != performanceFlashes.end();)
+    {
+        it->life -= 0.08f;
+        if (it->life <= 0.0f)
+            it = performanceFlashes.erase (it);
+        else
+            ++it;
+    }
+
+    if (performanceBeatEnergy > 0.0f)
+        performanceBeatEnergy *= 0.94f;
+
+    if (currentScene == Scene::builder && performanceMode)
+    {
+        if (! performanceSnakes.empty() || ! performanceAutomataCells.empty())
+        {
+            performanceStepAccumulator += performanceBpm / 60.0 / 30.0;
+            while (performanceStepAccumulator >= 0.25)
+            {
+                performanceStepAccumulator -= 0.25;
+                ++performanceTick;
+                stepPerformanceAgents();
+            }
+        }
+
+        repaint();
+        return;
+    }
+
+    if (currentScene == Scene::builder && builderViewMode == BuilderViewMode::firstPerson)
+    {
+        constexpr float playerSpeed = 7.0f / 30.0f;
+        constexpr float eyeHeight = 2.35f;
+        constexpr float gravityPerTick = 0.055f;
+        constexpr float maxFallSpeed = 0.6f;
+        constexpr float jumpVelocity = 0.62f;
+        constexpr float maxStepUp = 1.05f;
+        const float moveX = float ((juce::KeyPress::isKeyCurrentlyDown ('d') ? 1 : 0)
+                                 - (juce::KeyPress::isKeyCurrentlyDown ('a') ? 1 : 0));
+        const float moveZ = float ((juce::KeyPress::isKeyCurrentlyDown ('w') ? 1 : 0)
+                                 - (juce::KeyPress::isKeyCurrentlyDown ('s') ? 1 : 0));
+        const bool jumpDown = juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey);
+
+        if (moveX != 0.0f || moveZ != 0.0f)
+        {
+            const float forwardX = std::sin (firstPersonState.yaw);
+            const float forwardY = std::cos (firstPersonState.yaw);
+            const float rightX = std::cos (firstPersonState.yaw);
+            const float rightY = -std::sin (firstPersonState.yaw);
+
+            float wishX = rightX * moveX + forwardX * moveZ;
+            float wishY = rightY * moveX + forwardY * moveZ;
+            const float wishLength = std::sqrt (wishX * wishX + wishY * wishY);
+            if (wishLength > 0.0f)
+            {
+                wishX = (wishX / wishLength) * playerSpeed;
+                wishY = (wishY / wishLength) * playerSpeed;
+
+                const float nextX = firstPersonState.x + wishX;
+                const float nextY = firstPersonState.y + wishY;
+
+                if (isWalkable (nextX, firstPersonState.y, firstPersonState.eyeZ))
+                    firstPersonState.x = nextX;
+                if (isWalkable (firstPersonState.x, nextY, firstPersonState.eyeZ))
+                    firstPersonState.y = nextY;
+            }
+        }
+
+        const int supportX = juce::jlimit (0, getSurfaceWidth() - 1, static_cast<int> (std::floor (firstPersonState.x)));
+        const int supportY = juce::jlimit (0, getSurfaceDepth() - 1, static_cast<int> (std::floor (firstPersonState.y)));
+        const float supportedEyeZ = static_cast<float> (getTopSolidZAt (supportX, supportY)) + eyeHeight;
+        const bool onGround = std::abs (firstPersonState.eyeZ - supportedEyeZ) <= 0.05f;
+
+        if (jumpDown && ! firstPersonJumpWasDown && onGround)
+            firstPersonState.verticalVelocity = jumpVelocity;
+
+        firstPersonJumpWasDown = jumpDown;
+
+        if (firstPersonState.verticalVelocity > 0.0f)
+        {
+            firstPersonState.verticalVelocity = juce::jmax (-maxFallSpeed, firstPersonState.verticalVelocity - gravityPerTick);
+            const float nextEyeZ = firstPersonState.eyeZ + firstPersonState.verticalVelocity;
+            if (isWalkable (firstPersonState.x, firstPersonState.y, nextEyeZ))
+                firstPersonState.eyeZ = nextEyeZ;
+            else
+                firstPersonState.verticalVelocity = 0.0f;
+        }
+        else if (firstPersonState.eyeZ < supportedEyeZ
+            && supportedEyeZ - firstPersonState.eyeZ <= maxStepUp
+            && isWalkable (firstPersonState.x, firstPersonState.y, supportedEyeZ))
+        {
+            firstPersonState.eyeZ = supportedEyeZ;
+            firstPersonState.verticalVelocity = 0.0f;
+        }
+        else if (firstPersonState.eyeZ > supportedEyeZ && isWalkable (firstPersonState.x, firstPersonState.y, firstPersonState.eyeZ - 0.05f))
+        {
+            firstPersonState.verticalVelocity = juce::jlimit (-maxFallSpeed, maxFallSpeed, firstPersonState.verticalVelocity - gravityPerTick);
+            const float nextEyeZ = juce::jmax (supportedEyeZ, firstPersonState.eyeZ + firstPersonState.verticalVelocity);
+            if (isWalkable (firstPersonState.x, firstPersonState.y, nextEyeZ))
+                firstPersonState.eyeZ = nextEyeZ;
+            else
+                firstPersonState.verticalVelocity = 0.0f;
+
+            if (firstPersonState.eyeZ <= supportedEyeZ + 0.001f)
+            {
+                firstPersonState.eyeZ = supportedEyeZ;
+                firstPersonState.verticalVelocity = 0.0f;
+            }
+        }
+        else
+        {
+            firstPersonState.eyeZ = supportedEyeZ;
+            firstPersonState.verticalVelocity = 0.0f;
+        }
+
+        syncCursorToFirstPersonTarget();
+    }
+
+    repaint();
+}

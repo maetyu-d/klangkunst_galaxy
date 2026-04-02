@@ -1,0 +1,15 @@
+build/
+build-*/
+configure.log
+configure.err.log
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.exe
+*.vcxproj.user
+*.sln.docstates
+.vs/
+KlangKunstWorld_ref/
+TheWarBelow_ref/
