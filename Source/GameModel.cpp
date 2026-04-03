@@ -55,6 +55,51 @@ juce::Colour colourFromSeed (int seed, float saturation, float brightness)
     juce::Random random (seed);
     return juce::Colour::fromHSV (random.nextFloat(), saturation, brightness, 1.0f);
 }
+
+juce::String buildModeToString (PlanetBuildMode mode)
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric: return "isometric";
+        case PlanetBuildMode::firstPerson: return "firstPerson";
+        case PlanetBuildMode::cellularAutomata: return "cellularAutomata";
+        case PlanetBuildMode::tetris: return "tetris";
+    }
+
+    return "isometric";
+}
+
+PlanetBuildMode buildModeFromString (const juce::String& text)
+{
+    if (text == "firstPerson")
+        return PlanetBuildMode::firstPerson;
+    if (text == "cellularAutomata")
+        return PlanetBuildMode::cellularAutomata;
+    if (text == "tetris")
+        return PlanetBuildMode::tetris;
+    return PlanetBuildMode::isometric;
+}
+
+juce::String performanceModeToString (PlanetPerformanceMode mode)
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes: return "snakes";
+        case PlanetPerformanceMode::trains: return "trains";
+        case PlanetPerformanceMode::ripple: return "ripple";
+    }
+
+    return "snakes";
+}
+
+PlanetPerformanceMode performanceModeFromString (const juce::String& text)
+{
+    if (text == "trains")
+        return PlanetPerformanceMode::trains;
+    if (text == "ripple")
+        return PlanetPerformanceMode::ripple;
+    return PlanetPerformanceMode::snakes;
+}
 }
 
 int PlanetSurfaceState::getIndex (int x, int y, int z) const noexcept
@@ -121,6 +166,108 @@ void PersistenceManager::savePlanet (const PlanetSurfaceState& state)
     }
 }
 
+void PersistenceManager::recordPlanetVisit (const StarSystemMetadata& system, const PlanetMetadata& planet)
+{
+    ensureLoaded();
+
+    auto* visitLog = getVisitLogArray();
+    if (visitLog == nullptr)
+        return;
+
+    const auto nowIso = juce::Time::getCurrentTime().toISO8601 (true);
+
+    for (auto& entryVar : *visitLog)
+    {
+        if (auto* entry = entryVar.getDynamicObject(); entry != nullptr)
+        {
+            if (entry->getProperty ("planetId").toString() != planet.id)
+                continue;
+
+            entry->setProperty ("planetName", planet.name);
+            entry->setProperty ("systemId", system.id);
+            entry->setProperty ("systemName", system.name);
+            entry->setProperty ("planetSeed", planet.seed);
+            entry->setProperty ("systemSeed", system.seed);
+            entry->setProperty ("orbitIndex", planet.orbitIndex);
+            entry->setProperty ("musicalRootHz", planet.musicalRootHz);
+            entry->setProperty ("energy", planet.energy);
+            entry->setProperty ("water", planet.water);
+            entry->setProperty ("atmosphere", planet.atmosphere);
+            entry->setProperty ("assignedBuildMode", buildModeToString (planet.assignedBuildMode));
+            entry->setProperty ("assignedPerformanceMode", performanceModeToString (planet.assignedPerformanceMode));
+            entry->setProperty ("accent", planet.accent.toDisplayString (true));
+            entry->setProperty ("lastVisitedUtc", nowIso);
+            entry->setProperty ("visitCount", static_cast<int> (entry->getProperty ("visitCount")) + 1);
+            saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+            return;
+        }
+    }
+
+    auto* entry = new juce::DynamicObject();
+    entry->setProperty ("planetId", planet.id);
+    entry->setProperty ("planetName", planet.name);
+    entry->setProperty ("systemId", system.id);
+    entry->setProperty ("systemName", system.name);
+    entry->setProperty ("planetSeed", planet.seed);
+    entry->setProperty ("systemSeed", system.seed);
+    entry->setProperty ("orbitIndex", planet.orbitIndex);
+    entry->setProperty ("musicalRootHz", planet.musicalRootHz);
+    entry->setProperty ("energy", planet.energy);
+    entry->setProperty ("water", planet.water);
+    entry->setProperty ("atmosphere", planet.atmosphere);
+    entry->setProperty ("assignedBuildMode", buildModeToString (planet.assignedBuildMode));
+    entry->setProperty ("assignedPerformanceMode", performanceModeToString (planet.assignedPerformanceMode));
+    entry->setProperty ("accent", planet.accent.toDisplayString (true));
+    entry->setProperty ("firstVisitedUtc", nowIso);
+    entry->setProperty ("lastVisitedUtc", nowIso);
+    entry->setProperty ("visitCount", 1);
+    visitLog->add (juce::var (entry));
+    saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+}
+
+std::vector<VisitLogEntry> PersistenceManager::getVisitLog()
+{
+    ensureLoaded();
+    std::vector<VisitLogEntry> entries;
+
+    if (auto* visitLog = getVisitLogArray())
+    {
+        entries.reserve (static_cast<size_t> (visitLog->size()));
+        for (auto& entryVar : *visitLog)
+        {
+            if (auto* object = entryVar.getDynamicObject(); object != nullptr)
+            {
+                VisitLogEntry entry;
+                entry.planetId = object->getProperty ("planetId").toString();
+                entry.planetName = object->getProperty ("planetName").toString();
+                entry.systemId = object->getProperty ("systemId").toString();
+                entry.systemName = object->getProperty ("systemName").toString();
+                entry.planetSeed = static_cast<int> (object->getProperty ("planetSeed"));
+                entry.systemSeed = static_cast<int> (object->getProperty ("systemSeed"));
+                entry.orbitIndex = static_cast<int> (object->getProperty ("orbitIndex"));
+                entry.musicalRootHz = static_cast<float> (double (object->getProperty ("musicalRootHz")));
+                entry.energy = static_cast<float> (double (object->getProperty ("energy")));
+                entry.water = static_cast<float> (double (object->getProperty ("water")));
+                entry.atmosphere = static_cast<float> (double (object->getProperty ("atmosphere")));
+                entry.assignedBuildMode = buildModeFromString (object->getProperty ("assignedBuildMode").toString());
+                entry.assignedPerformanceMode = performanceModeFromString (object->getProperty ("assignedPerformanceMode").toString());
+                entry.accent = juce::Colour::fromString (object->getProperty ("accent").toString());
+                entry.firstVisitedUtc = object->getProperty ("firstVisitedUtc").toString();
+                entry.lastVisitedUtc = object->getProperty ("lastVisitedUtc").toString();
+                entry.visitCount = static_cast<int> (object->getProperty ("visitCount"));
+                entries.push_back (std::move (entry));
+            }
+        }
+    }
+
+    std::sort (entries.begin(), entries.end(), [] (const VisitLogEntry& a, const VisitLogEntry& b)
+    {
+        return a.lastVisitedUtc > b.lastVisitedUtc;
+    });
+
+    return entries;
+}
+
 void PersistenceManager::ensureLoaded()
 {
     if (! rootData.isVoid())
@@ -132,14 +279,28 @@ void PersistenceManager::ensureLoaded()
     if (! rootData.isObject())
         rootData = juce::var (new juce::DynamicObject());
 
-    if (auto* object = rootData.getDynamicObject(); object != nullptr && ! object->hasProperty ("planets"))
-        object->setProperty ("planets", juce::var (new juce::DynamicObject()));
+    if (auto* object = rootData.getDynamicObject(); object != nullptr)
+    {
+        if (! object->hasProperty ("planets"))
+            object->setProperty ("planets", juce::var (new juce::DynamicObject()));
+
+        if (! object->hasProperty ("visitLog"))
+            object->setProperty ("visitLog", juce::var (juce::Array<juce::var>()));
+    }
 }
 
 juce::DynamicObject* PersistenceManager::getPlanetsObject()
 {
     if (auto* object = rootData.getDynamicObject())
         return object->getProperty ("planets").getDynamicObject();
+
+    return nullptr;
+}
+
+juce::Array<juce::var>* PersistenceManager::getVisitLogArray()
+{
+    if (auto* object = rootData.getDynamicObject())
+        return object->getProperty ("visitLog").getArray();
 
     return nullptr;
 }
@@ -234,6 +395,8 @@ GalaxyMetadata GalaxyGenerator::generateGalaxy (int seed)
             planet->energy = systemRandom.nextFloat();
             planet->water = systemRandom.nextFloat();
             planet->atmosphere = systemRandom.nextFloat();
+            planet->assignedBuildMode = static_cast<PlanetBuildMode> (systemRandom.nextInt (4));
+            planet->assignedPerformanceMode = static_cast<PlanetPerformanceMode> (systemRandom.nextInt (3));
             planet->accent = colourFromSeed (planet->seed, 0.55f + 0.25f * planet->water, 0.65f + 0.15f * planet->energy);
         }
     }

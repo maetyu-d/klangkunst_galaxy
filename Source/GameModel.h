@@ -3,6 +3,21 @@
 #include <JuceHeader.h>
 #include <array>
 
+enum class PlanetBuildMode
+{
+    isometric,
+    firstPerson,
+    cellularAutomata,
+    tetris
+};
+
+enum class PlanetPerformanceMode
+{
+    snakes,
+    trains,
+    ripple
+};
+
 struct PlanetMetadata
 {
     juce::String id;
@@ -13,6 +28,8 @@ struct PlanetMetadata
     float energy = 0.0f;
     float water = 0.0f;
     float atmosphere = 0.0f;
+    PlanetBuildMode assignedBuildMode = PlanetBuildMode::isometric;
+    PlanetPerformanceMode assignedPerformanceMode = PlanetPerformanceMode::snakes;
     juce::Colour accent = juce::Colours::white;
 };
 
@@ -30,6 +47,27 @@ struct GalaxyMetadata
     juce::String name;
     int seed = 0;
     juce::OwnedArray<StarSystemMetadata> systems;
+};
+
+struct VisitLogEntry
+{
+    juce::String planetId;
+    juce::String planetName;
+    juce::String systemId;
+    juce::String systemName;
+    int planetSeed = 0;
+    int systemSeed = 0;
+    int orbitIndex = 0;
+    float musicalRootHz = 0.0f;
+    float energy = 0.0f;
+    float water = 0.0f;
+    float atmosphere = 0.0f;
+    PlanetBuildMode assignedBuildMode = PlanetBuildMode::isometric;
+    PlanetPerformanceMode assignedPerformanceMode = PlanetPerformanceMode::snakes;
+    juce::Colour accent = juce::Colours::white;
+    juce::String firstVisitedUtc;
+    juce::String lastVisitedUtc;
+    int visitCount = 0;
 };
 
 struct PlanetSurfaceState
@@ -59,6 +97,8 @@ public:
 
     std::unique_ptr<PlanetSurfaceState> loadPlanet (const juce::String& planetId);
     void savePlanet (const PlanetSurfaceState& state);
+    void recordPlanetVisit (const StarSystemMetadata& system, const PlanetMetadata& planet);
+    std::vector<VisitLogEntry> getVisitLog();
 
 private:
     juce::File saveFile;
@@ -66,6 +106,7 @@ private:
 
     void ensureLoaded();
     juce::DynamicObject* getPlanetsObject();
+    juce::Array<juce::var>* getVisitLogArray();
     static juce::var serialiseState (const PlanetSurfaceState& state);
     static std::unique_ptr<PlanetSurfaceState> deserialiseState (const juce::String& id, const juce::var& data);
 };

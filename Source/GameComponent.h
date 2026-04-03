@@ -47,12 +47,20 @@ private:
         firstPerson
     };
 
+    enum class TopDownBuildMode
+    {
+        none,
+        tetris,
+        cellularAutomata
+    };
+
     enum class PerformanceAgentMode
     {
         snakes,
         trains,
         orbiters,
-        automata
+        automata,
+        ripple
     };
 
     enum class PerformancePlacementMode
@@ -126,6 +134,26 @@ private:
         int placeZ = 0;
     };
 
+    enum class TetrominoType
+    {
+        I,
+        O,
+        T,
+        L,
+        J,
+        S,
+        Z
+    };
+
+    struct TetrisPiece
+    {
+        TetrominoType type = TetrominoType::T;
+        int rotation = 0;
+        juce::Point<int> anchor;
+        int z = 1;
+        bool active = false;
+    };
+
     struct PerformanceSnake
     {
         std::vector<juce::Point<int>> body;
@@ -145,6 +173,14 @@ private:
     {
         juce::Point<int> cell;
         bool horizontal = true;
+    };
+
+    struct PerformanceRipple
+    {
+        juce::Point<int> centre;
+        int radius = 0;
+        int maxRadius = 6;
+        juce::Colour colour = juce::Colours::white;
     };
 
     struct PerformanceFlash
@@ -239,11 +275,13 @@ private:
     GalaxyMetadata galaxy;
     PersistenceManager persistence;
     Scene currentScene = Scene::title;
+    bool galaxyLogOpen = false;
     int selectedSystemIndex = 0;
     int selectedPlanetIndex = 0;
     TitleAction hoveredTitleAction = TitleAction::none;
     std::unique_ptr<PlanetSurfaceState> activePlanetState;
     BuilderViewMode builderViewMode = BuilderViewMode::isometric;
+    TopDownBuildMode topDownBuildMode = TopDownBuildMode::none;
     FirstPersonState firstPersonState;
     IsometricCamera isometricCamera;
     int builderCursorX = 0;
@@ -254,12 +292,21 @@ private:
     int firstPersonPlacementOffset = 1;
     bool performanceMode = false;
     BuilderViewMode performanceEntryView = BuilderViewMode::isometric;
+    TopDownBuildMode performanceEntryTopDownMode = TopDownBuildMode::none;
+    TetrisPiece tetrisPiece;
+    TetrominoType nextTetrisType = TetrominoType::L;
+    int tetrisBuildLayer = 1;
+    int tetrisGravityTick = 0;
+    int tetrisGravityFrames = 18;
+    int automataBuildLayer = 1;
+    std::optional<juce::Point<int>> automataHoverCell;
     int performanceRegionMode = 2;
     int performanceAgentCount = 1;
     PerformanceAgentMode performanceAgentMode = PerformanceAgentMode::snakes;
     std::vector<PerformanceSnake> performanceSnakes;
     std::vector<PerformanceDisc> performanceDiscs;
     std::vector<PerformanceTrack> performanceTracks;
+    std::vector<PerformanceRipple> performanceRipples;
     std::vector<juce::Point<int>> performanceOrbitCenters;
     std::vector<juce::Point<int>> performanceAutomataCells;
     std::vector<PerformanceFlash> performanceFlashes;
@@ -340,13 +387,16 @@ private:
     void stepPerformanceSnakes();
     void stepPerformanceOrbiters();
     void stepPerformanceAutomata();
+    void stepPerformanceRipples();
     bool hasPerformanceTrackAt (juce::Point<int> cell) const noexcept;
     bool getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept;
     void drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area);
     void drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<float> area);
     juce::String getPerformanceAgentModeName() const;
+    juce::String getPlanetPerformanceModeName (PlanetPerformanceMode mode) const;
     juce::String getPerformancePlacementModeName() const;
     juce::String getSnakeTriggerModeName() const;
+    int getPerformanceSnakeLength() const noexcept;
     juce::String getPerformanceSynthName() const;
     juce::String getPerformanceDrumName() const;
     juce::String getPerformanceScaleName() const;
@@ -368,6 +418,26 @@ private:
     std::vector<int> getIsometricChordIntervals() const;
     std::vector<int> getActiveChordStackIntervals() const;
     juce::String getIsometricChordName() const;
+    juce::String getTopDownBuildModeName() const;
+    juce::String getPlanetBuildModeName (PlanetBuildMode mode) const;
+    void applyAssignedBuildModeForPlanet();
+    juce::String getTetrominoTypeName (TetrominoType type) const;
+    std::array<juce::Point<int>, 4> getTetrominoOffsets (TetrominoType type, int rotation) const;
+    std::vector<juce::Point<int>> getTetrisPlacementCells (const TetrisPiece& piece) const;
+    bool tetrisPieceFits (const TetrisPiece& piece) const;
+    void clampTetrisPieceToSurface (TetrisPiece& piece) const;
+    TetrominoType getRandomTetrominoType() const;
+    void spawnTetrisPiece (bool randomizeType);
+    void moveTetrisPiece (int dx, int dy, int dz);
+    void rotateTetrisPiece();
+    void placeTetrisPiece (bool filled);
+    void softDropTetrisPiece();
+    void hardDropTetrisPiece();
+    void advanceTetrisLayer();
+    int getAutomataNeighbourCount (int x, int y, int z) const;
+    void toggleAutomataCell (juce::Point<int> cell, bool filled);
+    void randomiseAutomataSeed();
+    void advanceAutomataLayer();
     void placeFirstPersonAtSafeSpawn();
     void syncCursorToFirstPersonTarget();
     TargetedVoxel findFirstPersonTarget() const;
@@ -384,10 +454,13 @@ private:
     void drawHeader (juce::Graphics& g, juce::Rectangle<int> area);
     void drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area);
+    void drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> area);
     void drawLandingScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawHotbar (juce::Graphics& g, juce::Rectangle<int> area);
     void drawIsometricBuilder (juce::Graphics& g, juce::Rectangle<int> area);
+    void drawTetrisBuildView (juce::Graphics& g, juce::Rectangle<float> area);
+    void drawAutomataBuildView (juce::Graphics& g, juce::Rectangle<float> area);
     void drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<int> area);
     void drawTexturedCube (juce::Graphics& g, juce::Point<float> origin, float halfWidth, float halfHeight, int blockType, bool selected) const;
     void fillTexturedDiamond (juce::Graphics& g, const juce::Path& path, int blockType, int zLayer, float brightness, bool topFace) const;

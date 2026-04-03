@@ -874,6 +874,26 @@ void GameComponent::mouseMove (const juce::MouseEvent& event)
         return;
     }
 
+    if (topDownBuildMode == TopDownBuildMode::tetris || topDownBuildMode == TopDownBuildMode::cellularAutomata)
+    {
+        if (const auto cell = getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()))
+        {
+            if (topDownBuildMode == TopDownBuildMode::tetris)
+            {
+                if (! tetrisPiece.active)
+                    spawnTetrisPiece (false);
+                tetrisPiece.anchor = *cell;
+                clampTetrisPieceToSurface (tetrisPiece);
+            }
+            else
+            {
+                automataHoverCell = *cell;
+            }
+            repaint();
+        }
+        return;
+    }
+
     if (builderViewMode == BuilderViewMode::firstPerson)
     {
         if (! firstPersonCursorCaptured)
@@ -918,6 +938,9 @@ void GameComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWh
         return;
 
     if (performanceMode)
+        return;
+
+    if (topDownBuildMode != TopDownBuildMode::none)
         return;
 
     const float delta = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
@@ -1023,6 +1046,33 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
             return;
         }
 
+        if (topDownBuildMode == TopDownBuildMode::tetris)
+        {
+            if (const auto cell = getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()))
+            {
+                if (! tetrisPiece.active)
+                    spawnTetrisPiece (false);
+                tetrisPiece.anchor = *cell;
+                clampTetrisPieceToSurface (tetrisPiece);
+                const bool remove = event.mods.isRightButtonDown() || event.mods.isCtrlDown();
+                placeTetrisPiece (! remove);
+                repaint();
+            }
+            return;
+        }
+
+        if (topDownBuildMode == TopDownBuildMode::cellularAutomata)
+        {
+            if (const auto cell = getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()))
+            {
+                automataHoverCell = *cell;
+                const bool remove = event.mods.isRightButtonDown() || event.mods.isCtrlDown();
+                toggleAutomataCell (*cell, ! remove);
+                repaint();
+            }
+            return;
+        }
+
         if (builderViewMode == BuilderViewMode::firstPerson)
             return;
 
@@ -1073,6 +1123,20 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
     }
     else if (currentScene == Scene::galaxy)
     {
+        if (lowerChar == 'l')
+        {
+            galaxyLogOpen = ! galaxyLogOpen;
+            repaint();
+            return true;
+        }
+        if (galaxyLogOpen && key == juce::KeyPress::escapeKey)
+        {
+            galaxyLogOpen = false;
+            repaint();
+            return true;
+        }
+        if (galaxyLogOpen)
+            return true;
         if (key == juce::KeyPress::leftKey)   { moveSystemSelection (-1); return true; }
         if (key == juce::KeyPress::rightKey)  { moveSystemSelection (1); return true; }
         if (key == juce::KeyPress::upKey)     { movePlanetSelection (-1); return true; }
@@ -1105,12 +1169,13 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             return true;
         }
 
-        if (key == juce::KeyPress::returnKey)
+        if (lowerChar == 'p')
         {
             performanceMode = ! performanceMode;
             if (performanceMode)
             {
                 performanceEntryView = builderViewMode;
+                performanceEntryTopDownMode = topDownBuildMode;
                 applyPerformanceEntryDefaults();
                 if (performanceSnakes.empty() && performanceAutomataCells.empty())
                     resetPerformanceAgents();
@@ -1118,6 +1183,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             else
             {
                 builderViewMode = performanceEntryView;
+                topDownBuildMode = performanceEntryTopDownMode;
             }
             updateFirstPersonMouseCapture();
             repaint();
@@ -1166,7 +1232,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             }
             if (lowerChar == 'n')
             {
-                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 4);
+                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 5);
                 resetPerformanceAgents();
                 repaint();
                 return true;
@@ -1240,9 +1306,30 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
 
         if (key == juce::KeyPress::tabKey)
         {
-            builderViewMode = builderViewMode == BuilderViewMode::isometric
-                                ? BuilderViewMode::firstPerson
-                                : BuilderViewMode::isometric;
+            if (builderViewMode == BuilderViewMode::isometric && topDownBuildMode == TopDownBuildMode::none)
+            {
+                builderViewMode = BuilderViewMode::firstPerson;
+            }
+            else if (builderViewMode == BuilderViewMode::firstPerson)
+            {
+                builderViewMode = BuilderViewMode::isometric;
+                topDownBuildMode = TopDownBuildMode::tetris;
+                tetrisBuildLayer = builderLayer;
+                spawnTetrisPiece (true);
+            }
+            else if (topDownBuildMode == TopDownBuildMode::tetris)
+            {
+                topDownBuildMode = TopDownBuildMode::cellularAutomata;
+                automataBuildLayer = tetrisBuildLayer;
+                builderLayer = automataBuildLayer;
+                automataHoverCell = juce::Point<int> (builderCursorX, builderCursorY);
+            }
+            else
+            {
+                topDownBuildMode = TopDownBuildMode::none;
+                builderViewMode = BuilderViewMode::isometric;
+            }
+
             if (builderViewMode == BuilderViewMode::firstPerson)
                 placeFirstPersonAtSafeSpawn();
             updateFirstPersonMouseCapture();
@@ -1255,6 +1342,60 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
         {
             isometricPlacementHeight = keyCode - '0';
             repaint();
+            return true;
+        }
+
+        if (topDownBuildMode == TopDownBuildMode::tetris)
+        {
+            if (key == juce::KeyPress::leftKey) { moveTetrisPiece (-1, 0, 0); repaint(); return true; }
+            if (key == juce::KeyPress::rightKey) { moveTetrisPiece (1, 0, 0); repaint(); return true; }
+            if (key == juce::KeyPress::upKey) { moveTetrisPiece (0, -1, 0); repaint(); return true; }
+            if (key == juce::KeyPress::downKey) { moveTetrisPiece (0, 1, 0); repaint(); return true; }
+            if (key == juce::KeyPress::pageUpKey || key.getTextCharacter() == ']')
+            {
+                tetrisBuildLayer = juce::jlimit (1, getSurfaceHeight() - 1, tetrisBuildLayer + 1);
+                builderLayer = tetrisBuildLayer;
+                if (tetrisPiece.active)
+                    tetrisPiece.z = tetrisBuildLayer;
+                repaint();
+                return true;
+            }
+            if (key == juce::KeyPress::pageDownKey || key.getTextCharacter() == '[')
+            {
+                tetrisBuildLayer = juce::jlimit (1, getSurfaceHeight() - 1, tetrisBuildLayer - 1);
+                builderLayer = tetrisBuildLayer;
+                if (tetrisPiece.active)
+                    tetrisPiece.z = tetrisBuildLayer;
+                repaint();
+                return true;
+            }
+            if (lowerChar == 'e') { advanceTetrisLayer(); repaint(); return true; }
+            if (lowerChar == 'v') { isometricChordType = static_cast<IsometricChordType> ((static_cast<int> (isometricChordType) + 1) % 8); repaint(); return true; }
+            if (lowerChar == 'r') { rotateTetrisPiece(); repaint(); return true; }
+            if (lowerChar == 'n') { spawnTetrisPiece (true); repaint(); return true; }
+            if (lowerChar == 's') { softDropTetrisPiece(); repaint(); return true; }
+            if (key == juce::KeyPress::spaceKey) { hardDropTetrisPiece(); repaint(); return true; }
+            if (lowerChar == 'o') { placeTetrisPiece (true); repaint(); return true; }
+            if (lowerChar == 'x' || key == juce::KeyPress::backspaceKey || key == juce::KeyPress::deleteKey) { placeTetrisPiece (false); repaint(); return true; }
+            if (lowerChar == 'c') { clearPlanetSurface(); repaint(); return true; }
+            return true;
+        }
+
+        if (topDownBuildMode == TopDownBuildMode::cellularAutomata)
+        {
+            if (! automataHoverCell.has_value())
+                automataHoverCell = juce::Point<int> (builderCursorX, builderCursorY);
+            if (key == juce::KeyPress::leftKey) { automataHoverCell = juce::Point<int> (juce::jmax (0, automataHoverCell->x - 1), automataHoverCell->y); repaint(); return true; }
+            if (key == juce::KeyPress::rightKey) { automataHoverCell = juce::Point<int> (juce::jmin (getSurfaceWidth() - 1, automataHoverCell->x + 1), automataHoverCell->y); repaint(); return true; }
+            if (key == juce::KeyPress::upKey) { automataHoverCell = juce::Point<int> (automataHoverCell->x, juce::jmax (0, automataHoverCell->y - 1)); repaint(); return true; }
+            if (key == juce::KeyPress::downKey) { automataHoverCell = juce::Point<int> (automataHoverCell->x, juce::jmin (getSurfaceDepth() - 1, automataHoverCell->y + 1)); repaint(); return true; }
+            if (key == juce::KeyPress::pageUpKey || key.getTextCharacter() == ']') { automataBuildLayer = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer + 1); builderLayer = automataBuildLayer; repaint(); return true; }
+            if (key == juce::KeyPress::pageDownKey || key.getTextCharacter() == '[') { automataBuildLayer = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer - 1); builderLayer = automataBuildLayer; repaint(); return true; }
+            if (lowerChar == 'n') { randomiseAutomataSeed(); repaint(); return true; }
+            if (lowerChar == 'e') { advanceAutomataLayer(); repaint(); return true; }
+            if (lowerChar == 'o' || key == juce::KeyPress::spaceKey) { toggleAutomataCell (*automataHoverCell, true); repaint(); return true; }
+            if (lowerChar == 'x' || key == juce::KeyPress::backspaceKey || key == juce::KeyPress::deleteKey) { toggleAutomataCell (*automataHoverCell, false); repaint(); return true; }
+            if (lowerChar == 'c') { clearPlanetSurface(); repaint(); return true; }
             return true;
         }
 
@@ -1309,6 +1450,8 @@ const PlanetMetadata& GameComponent::getSelectedPlanet() const
 void GameComponent::setScene (Scene newScene)
 {
     currentScene = newScene;
+    if (currentScene != Scene::galaxy)
+        galaxyLogOpen = false;
     updateMusicState();
     updateFirstPersonMouseCapture();
     repaint();
@@ -1333,18 +1476,24 @@ void GameComponent::movePlanetSelection (int delta)
 void GameComponent::landOnSelectedPlanet()
 {
     ensureActivePlanetLoaded();
+    persistence.recordPlanetVisit (getSelectedSystem(), getSelectedPlanet());
     performanceMode = false;
     resetPerformanceState();
     applyPerformancePresetForPlanet();
-    builderViewMode = BuilderViewMode::isometric;
     builderCursorX = getSurfaceWidth() / 2;
     builderCursorY = getSurfaceDepth() / 2;
     builderLayer = 1;
     isometricPlacementHeight = 1;
     isometricChordType = IsometricChordType::single;
     firstPersonPlacementOffset = 1;
+    tetrisPiece = {};
+    nextTetrisType = TetrominoType::L;
+    tetrisBuildLayer = 1;
+    automataBuildLayer = 1;
+    automataHoverCell = {};
     isometricCamera = {};
     hasMouseAnchor = false;
+    applyAssignedBuildModeForPlanet();
     setScene (Scene::landing);
 }
 
@@ -1353,11 +1502,15 @@ void GameComponent::enterBuilder()
     ensureActivePlanetLoaded();
     performanceMode = false;
     applyPerformancePresetForPlanet();
-    builderViewMode = BuilderViewMode::isometric;
     firstPersonPlacementOffset = 1;
-    placeFirstPersonAtSafeSpawn();
+    tetrisPiece = {};
+    nextTetrisType = TetrominoType::L;
+    tetrisBuildLayer = 1;
+    automataBuildLayer = 1;
+    automataHoverCell = {};
     hasMouseAnchor = false;
     updateIsometricCursorFromPosition (getBuilderGridArea().getCentre().toFloat());
+    applyAssignedBuildModeForPlanet();
     setScene (Scene::builder);
 }
 
@@ -1873,6 +2026,7 @@ void GameComponent::resetPerformanceState()
     performanceSnakes.clear();
     performanceDiscs.clear();
     performanceTracks.clear();
+    performanceRipples.clear();
     performanceOrbitCenters.clear();
     performanceAutomataCells.clear();
     performanceFlashes.clear();
@@ -1906,14 +2060,18 @@ void GameComponent::applyPerformancePresetForPlanet()
 {
     const auto& planet = getSelectedPlanet();
     std::mt19937 rng (planet.id.hashCode());
-    std::uniform_int_distribution<int> modeDist (0, 3);
     std::uniform_int_distribution<int> tempoDist (96, 170);
     std::uniform_int_distribution<int> drumDist (0, 4);
     std::uniform_int_distribution<int> scaleDist (0, 4);
     std::uniform_int_distribution<int> rootDist (0, 11);
     std::uniform_int_distribution<int> triggerDist (0, 1);
 
-    performanceAgentMode = static_cast<PerformanceAgentMode> (modeDist (rng));
+    switch (planet.assignedPerformanceMode)
+    {
+        case PlanetPerformanceMode::snakes: performanceAgentMode = PerformanceAgentMode::snakes; break;
+        case PlanetPerformanceMode::trains: performanceAgentMode = PerformanceAgentMode::trains; break;
+        case PlanetPerformanceMode::ripple: performanceAgentMode = PerformanceAgentMode::ripple; break;
+    }
     performanceBpm = static_cast<double> (tempoDist (rng));
     synthEngine = SynthEngine::chipPulse;
     drumMode = static_cast<DrumMode> (drumDist (rng));
@@ -1937,6 +2095,7 @@ void GameComponent::resetPerformanceAgents()
 {
     performanceSnakes.clear();
     performanceAutomataCells.clear();
+    performanceRipples.clear();
     performanceFlashes.clear();
     performanceTick = 0;
 
@@ -1947,6 +2106,7 @@ void GameComponent::resetPerformanceAgents()
     juce::Random rng;
     static const std::array<juce::Point<int>, 4> snakeDirections { juce::Point<int> { 1, 0 }, juce::Point<int> { -1, 0 },
                                                                    juce::Point<int> { 0, 1 }, juce::Point<int> { 0, -1 } };
+    const int snakeLength = getPerformanceSnakeLength();
     static const std::array<juce::Colour, 8> snakeColours {
         juce::Colour::fromRGB (255, 204, 96), juce::Colour::fromRGB (105, 234, 255),
         juce::Colour::fromRGB (255, 128, 118), juce::Colour::fromRGB (182, 126, 255),
@@ -1963,6 +2123,29 @@ void GameComponent::resetPerformanceAgents()
                                    bounds.getY() + rng.nextInt (bounds.getHeight()));
             if (std::find (performanceAutomataCells.begin(), performanceAutomataCells.end(), cell) == performanceAutomataCells.end())
                 performanceAutomataCells.push_back (cell);
+        }
+        return;
+    }
+
+    if (performanceAgentMode == PerformanceAgentMode::ripple)
+    {
+        const int rippleCount = juce::jmax (1, performanceAgentCount);
+        static const std::array<juce::Colour, 8> rippleColours {
+            juce::Colour::fromRGB (92, 214, 255), juce::Colour::fromRGB (255, 186, 108),
+            juce::Colour::fromRGB (116, 224, 110), juce::Colour::fromRGB (255, 128, 118),
+            juce::Colour::fromRGB (182, 126, 255), juce::Colour::fromRGB (255, 214, 84),
+            juce::Colour::fromRGB (255, 110, 198), juce::Colour::fromRGB (190, 244, 255)
+        };
+
+        for (int i = 0; i < rippleCount; ++i)
+        {
+            PerformanceRipple ripple;
+            ripple.centre = { bounds.getX() + rng.nextInt (bounds.getWidth()),
+                              bounds.getY() + rng.nextInt (bounds.getHeight()) };
+            ripple.radius = 0;
+            ripple.maxRadius = 2 + rng.nextInt (5);
+            ripple.colour = rippleColours[static_cast<size_t> (i % static_cast<int> (rippleColours.size()))];
+            performanceRipples.push_back (ripple);
         }
         return;
     }
@@ -1992,7 +2175,7 @@ void GameComponent::resetPerformanceAgents()
                                                  bounds.getY() + rng.nextInt (bounds.getHeight()));
             snake.body.push_back (start);
             auto tail = start;
-            for (int segment = 1; segment < 5; ++segment)
+            for (int segment = 1; segment < snakeLength; ++segment)
             {
                 tail.x = juce::jlimit (bounds.getX(), bounds.getRight() - 1, tail.x - snake.direction.x);
                 tail.y = juce::jlimit (bounds.getY(), bounds.getBottom() - 1, tail.y - snake.direction.y);
@@ -2031,6 +2214,7 @@ juce::String GameComponent::getPerformanceAgentModeName() const
         case PerformanceAgentMode::trains: return "Trains";
         case PerformanceAgentMode::orbiters: return "Orbiters";
         case PerformanceAgentMode::automata: return "Automata";
+        case PerformanceAgentMode::ripple: return "Ripple";
     }
 
     return "Snakes";
@@ -2051,6 +2235,18 @@ juce::String GameComponent::getPerformancePlacementModeName() const
 juce::String GameComponent::getSnakeTriggerModeName() const
 {
     return snakeTriggerMode == SnakeTriggerMode::headOnly ? "Head only" : "Whole body";
+}
+
+int GameComponent::getPerformanceSnakeLength() const noexcept
+{
+    switch (getSurfaceWidth())
+    {
+        case 12: return 3;
+        case 16: return 4;
+        case 20: return 5;
+        case 32: return 8;
+        default: return 4;
+    }
 }
 
 juce::String GameComponent::getPerformanceSynthName() const
@@ -2313,6 +2509,366 @@ juce::String GameComponent::getIsometricChordName() const
     }
 
     return "Single";
+}
+
+juce::String GameComponent::getTopDownBuildModeName() const
+{
+    switch (topDownBuildMode)
+    {
+        case TopDownBuildMode::none: return builderViewMode == BuilderViewMode::firstPerson ? "First-Person" : "Isometric";
+        case TopDownBuildMode::tetris: return "Tetris Build";
+        case TopDownBuildMode::cellularAutomata: return "Cellular Automata";
+    }
+
+    return "Build";
+}
+
+juce::String GameComponent::getPlanetBuildModeName (PlanetBuildMode mode) const
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric: return "Isometric";
+        case PlanetBuildMode::firstPerson: return "First Person";
+        case PlanetBuildMode::cellularAutomata: return "Cellular Automata";
+        case PlanetBuildMode::tetris: return "Tetris";
+    }
+
+    return "Isometric";
+}
+
+juce::String GameComponent::getPlanetPerformanceModeName (PlanetPerformanceMode mode) const
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes: return "Snakes";
+        case PlanetPerformanceMode::trains: return "Trains";
+        case PlanetPerformanceMode::ripple: return "Ripple";
+    }
+
+    return "Snakes";
+}
+
+void GameComponent::applyAssignedBuildModeForPlanet()
+{
+    const auto& planet = getSelectedPlanet();
+    topDownBuildMode = TopDownBuildMode::none;
+    builderViewMode = BuilderViewMode::isometric;
+
+    switch (planet.assignedBuildMode)
+    {
+        case PlanetBuildMode::isometric:
+            break;
+        case PlanetBuildMode::firstPerson:
+            builderViewMode = BuilderViewMode::firstPerson;
+            placeFirstPersonAtSafeSpawn();
+            break;
+        case PlanetBuildMode::cellularAutomata:
+            topDownBuildMode = TopDownBuildMode::cellularAutomata;
+            automataBuildLayer = builderLayer;
+            automataHoverCell = juce::Point<int> (builderCursorX, builderCursorY);
+            break;
+        case PlanetBuildMode::tetris:
+            topDownBuildMode = TopDownBuildMode::tetris;
+            tetrisBuildLayer = builderLayer;
+            spawnTetrisPiece (true);
+            break;
+    }
+}
+
+juce::String GameComponent::getTetrominoTypeName (TetrominoType type) const
+{
+    switch (type)
+    {
+        case TetrominoType::I: return "I";
+        case TetrominoType::O: return "O";
+        case TetrominoType::T: return "T";
+        case TetrominoType::L: return "L";
+        case TetrominoType::J: return "J";
+        case TetrominoType::S: return "S";
+        case TetrominoType::Z: return "Z";
+    }
+
+    return "T";
+}
+
+std::array<juce::Point<int>, 4> GameComponent::getTetrominoOffsets (TetrominoType type, int rotation) const
+{
+    const int r = ((rotation % 4) + 4) % 4;
+
+    switch (type)
+    {
+        case TetrominoType::I:
+            return r % 2 == 0
+                     ? std::array<juce::Point<int>, 4> { juce::Point<int> { -1, 0 }, { 0, 0 }, { 1, 0 }, { 2, 0 } }
+                     : std::array<juce::Point<int>, 4> { juce::Point<int> { 0, -1 }, { 0, 0 }, { 0, 1 }, { 0, 2 } };
+        case TetrominoType::O:
+            return { juce::Point<int> { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } };
+        case TetrominoType::T:
+            switch (r)
+            {
+                case 0: return { juce::Point<int> { -1, 0 }, { 0, 0 }, { 1, 0 }, { 0, 1 } };
+                case 1: return { juce::Point<int> { 0, -1 }, { 0, 0 }, { 0, 1 }, { 1, 0 } };
+                case 2: return { juce::Point<int> { -1, 0 }, { 0, 0 }, { 1, 0 }, { 0, -1 } };
+                default: return { juce::Point<int> { 0, -1 }, { 0, 0 }, { 0, 1 }, { -1, 0 } };
+            }
+        case TetrominoType::L:
+            switch (r)
+            {
+                case 0: return { juce::Point<int> { -1, 0 }, { 0, 0 }, { 1, 0 }, { 1, 1 } };
+                case 1: return { juce::Point<int> { 0, -1 }, { 0, 0 }, { 0, 1 }, { 1, -1 } };
+                case 2: return { juce::Point<int> { -1, -1 }, { -1, 0 }, { 0, 0 }, { 1, 0 } };
+                default: return { juce::Point<int> { -1, 1 }, { 0, -1 }, { 0, 0 }, { 0, 1 } };
+            }
+        case TetrominoType::J:
+            switch (r)
+            {
+                case 0: return { juce::Point<int> { -1, 1 }, { -1, 0 }, { 0, 0 }, { 1, 0 } };
+                case 1: return { juce::Point<int> { 0, -1 }, { 0, 0 }, { 0, 1 }, { 1, 1 } };
+                case 2: return { juce::Point<int> { -1, 0 }, { 0, 0 }, { 1, 0 }, { 1, -1 } };
+                default: return { juce::Point<int> { -1, -1 }, { 0, -1 }, { 0, 0 }, { 0, 1 } };
+            }
+        case TetrominoType::S:
+            return r % 2 == 0
+                     ? std::array<juce::Point<int>, 4> { juce::Point<int> { 0, 0 }, { 1, 0 }, { -1, 1 }, { 0, 1 } }
+                     : std::array<juce::Point<int>, 4> { juce::Point<int> { 0, -1 }, { 0, 0 }, { 1, 0 }, { 1, 1 } };
+        case TetrominoType::Z:
+            return r % 2 == 0
+                     ? std::array<juce::Point<int>, 4> { juce::Point<int> { -1, 0 }, { 0, 0 }, { 0, 1 }, { 1, 1 } }
+                     : std::array<juce::Point<int>, 4> { juce::Point<int> { 1, -1 }, { 0, 0 }, { 1, 0 }, { 0, 1 } };
+    }
+
+    return { juce::Point<int> { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } };
+}
+
+std::vector<juce::Point<int>> GameComponent::getTetrisPlacementCells (const TetrisPiece& piece) const
+{
+    std::vector<juce::Point<int>> cells;
+    cells.reserve (4);
+    for (const auto& offset : getTetrominoOffsets (piece.type, piece.rotation))
+        cells.push_back (piece.anchor + offset);
+    return cells;
+}
+
+bool GameComponent::tetrisPieceFits (const TetrisPiece& piece) const
+{
+    if (activePlanetState == nullptr || ! piece.active)
+        return false;
+
+    if (! juce::isPositiveAndBelow (piece.z, getSurfaceHeight()))
+        return false;
+
+    for (const auto& cell : getTetrisPlacementCells (piece))
+        if (! juce::isPositiveAndBelow (cell.x, getSurfaceWidth()) || ! juce::isPositiveAndBelow (cell.y, getSurfaceDepth()))
+            return false;
+
+    return true;
+}
+
+void GameComponent::clampTetrisPieceToSurface (TetrisPiece& piece) const
+{
+    const auto offsets = getTetrominoOffsets (piece.type, piece.rotation);
+    int minX = std::numeric_limits<int>::max();
+    int minY = std::numeric_limits<int>::max();
+    int maxX = std::numeric_limits<int>::min();
+    int maxY = std::numeric_limits<int>::min();
+
+    for (const auto& offset : offsets)
+    {
+        minX = juce::jmin (minX, offset.x);
+        minY = juce::jmin (minY, offset.y);
+        maxX = juce::jmax (maxX, offset.x);
+        maxY = juce::jmax (maxY, offset.y);
+    }
+
+    piece.anchor.x = juce::jlimit (-minX, getSurfaceWidth() - 1 - maxX, piece.anchor.x);
+    piece.anchor.y = juce::jlimit (-minY, getSurfaceDepth() - 1 - maxY, piece.anchor.y);
+    piece.z = juce::jlimit (1, getSurfaceHeight() - 1, piece.z);
+}
+
+GameComponent::TetrominoType GameComponent::getRandomTetrominoType() const
+{
+    return static_cast<TetrominoType> (juce::Random::getSystemRandom().nextInt (7));
+}
+
+void GameComponent::spawnTetrisPiece (bool randomizeType)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    if (randomizeType)
+        nextTetrisType = getRandomTetrominoType();
+
+    tetrisPiece.type = nextTetrisType;
+    tetrisPiece.rotation = 0;
+    tetrisPiece.anchor = { getSurfaceWidth() / 2, getSurfaceDepth() / 2 };
+    tetrisPiece.z = juce::jlimit (1, getSurfaceHeight() - 1, tetrisBuildLayer);
+    tetrisPiece.active = true;
+    clampTetrisPieceToSurface (tetrisPiece);
+    nextTetrisType = getRandomTetrominoType();
+}
+
+void GameComponent::moveTetrisPiece (int dx, int dy, int dz)
+{
+    if (! tetrisPiece.active)
+        spawnTetrisPiece (false);
+
+    auto moved = tetrisPiece;
+    moved.anchor += juce::Point<int> (dx, dy);
+    moved.z += dz;
+    clampTetrisPieceToSurface (moved);
+    tetrisPiece = moved;
+}
+
+void GameComponent::rotateTetrisPiece()
+{
+    if (! tetrisPiece.active)
+        spawnTetrisPiece (false);
+
+    auto rotated = tetrisPiece;
+    rotated.rotation = (rotated.rotation + 1) % 4;
+    clampTetrisPieceToSurface (rotated);
+    tetrisPiece = rotated;
+}
+
+void GameComponent::placeTetrisPiece (bool filled)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    if (! tetrisPiece.active)
+        spawnTetrisPiece (false);
+
+    if (! tetrisPieceFits (tetrisPiece))
+        return;
+
+    const auto intervals = getActiveChordStackIntervals();
+    for (const auto& cell : getTetrisPlacementCells (tetrisPiece))
+    {
+        for (const int interval : intervals)
+        {
+            const int z = juce::jlimit (1, getSurfaceHeight() - 1, tetrisPiece.z + interval - builderLayer);
+            const int mappedBlockType = 1 + (z % 4);
+            activePlanetState->setBlock (cell.x, cell.y, z, filled ? mappedBlockType : 0);
+        }
+    }
+
+    saveActivePlanet();
+    spawnTetrisPiece (true);
+}
+
+void GameComponent::softDropTetrisPiece()
+{
+    moveTetrisPiece (0, 1, 0);
+}
+
+void GameComponent::hardDropTetrisPiece()
+{
+    if (! tetrisPiece.active)
+        spawnTetrisPiece (false);
+
+    tetrisPiece.anchor.y = getSurfaceDepth() / 2;
+    clampTetrisPieceToSurface (tetrisPiece);
+    tetrisPiece.anchor.y = getSurfaceDepth() - 1;
+    clampTetrisPieceToSurface (tetrisPiece);
+}
+
+void GameComponent::advanceTetrisLayer()
+{
+    tetrisBuildLayer = juce::jlimit (1, getSurfaceHeight() - 1, tetrisBuildLayer + 1);
+    builderLayer = tetrisBuildLayer;
+    spawnTetrisPiece (true);
+}
+
+int GameComponent::getAutomataNeighbourCount (int x, int y, int z) const
+{
+    int count = 0;
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            if (dx == 0 && dy == 0)
+                continue;
+
+            const int nx = x + dx;
+            const int ny = y + dy;
+            if (juce::isPositiveAndBelow (nx, getSurfaceWidth())
+                && juce::isPositiveAndBelow (ny, getSurfaceDepth())
+                && activePlanetState != nullptr
+                && activePlanetState->getBlock (nx, ny, z) != 0)
+                ++count;
+        }
+
+    return count;
+}
+
+void GameComponent::toggleAutomataCell (juce::Point<int> cell, bool filled)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr
+        || ! juce::isPositiveAndBelow (cell.x, getSurfaceWidth())
+        || ! juce::isPositiveAndBelow (cell.y, getSurfaceDepth()))
+        return;
+
+    const int z = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer);
+    const int mappedBlockType = 1 + (z % 4);
+    activePlanetState->setBlock (cell.x, cell.y, z, filled ? mappedBlockType : 0);
+    saveActivePlanet();
+}
+
+void GameComponent::randomiseAutomataSeed()
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    const int z = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer);
+    juce::Random rng (static_cast<int64> (getSelectedPlanet().seed) + z * 971);
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+            activePlanetState->setBlock (x, y, z, rng.nextFloat() < 0.28f ? 1 + (z % 4) : 0);
+    saveActivePlanet();
+}
+
+void GameComponent::advanceAutomataLayer()
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    const int sourceZ = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer);
+    const int destZ = juce::jlimit (1, getSurfaceHeight() - 1, sourceZ + 1);
+    if (destZ == sourceZ)
+        return;
+
+    std::vector<int> nextLayer (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), 0);
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+        {
+            const bool alive = activePlanetState->getBlock (x, y, sourceZ) != 0;
+            const int count = getAutomataNeighbourCount (x, y, sourceZ);
+            bool nextAlive = false;
+
+            switch ((sourceZ + x + y) % 4)
+            {
+                case 0: nextAlive = (alive && (count == 2 || count == 3)) || (! alive && count == 3); break;
+                case 1: nextAlive = (alive && (count >= 4 && count <= 8)) || (! alive && count == 3); break;
+                case 2: nextAlive = (alive && (count % 2 == 1)) || (! alive && (count % 2 == 1)); break;
+                default: nextAlive = (alive && (count == 3 || count == 4 || count == 6 || count == 7 || count == 8))
+                                  || (! alive && (count == 3 || count == 6 || count == 7 || count == 8)); break;
+            }
+
+            nextLayer[static_cast<size_t> (y * getSurfaceWidth() + x)] = nextAlive ? 1 + (destZ % 4) : 0;
+        }
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+            activePlanetState->setBlock (x, y, destZ,
+                                         nextLayer[static_cast<size_t> (y * getSurfaceWidth() + x)]);
+
+    automataBuildLayer = destZ;
+    builderLayer = automataBuildLayer;
+    saveActivePlanet();
 }
 
 void GameComponent::placeFirstPersonAtSafeSpawn()
@@ -2579,23 +3135,25 @@ juce::String GameComponent::getBuilderViewName() const
 
 juce::Rectangle<float> GameComponent::titleCardBounds (juce::Rectangle<float> area) const
 {
-    return area.withSizeKeepingCentre (900.0f, 400.0f).translated (0.0f, -16.0f);
+    const auto width = juce::jmin (area.getWidth() - 64.0f, 1100.0f);
+    const auto height = juce::jmin (area.getHeight() - 120.0f, 470.0f);
+    return area.withSizeKeepingCentre (width, height).translated (0.0f, 8.0f);
 }
 
 juce::Rectangle<float> GameComponent::titleButtonBounds (juce::Rectangle<float> area, int index) const
 {
-    auto row = titleCardBounds (area).reduced (34.0f, 28.0f);
-    row.removeFromTop (206.0f);
+    auto row = titleCardBounds (area).reduced (42.0f, 34.0f);
+    row.removeFromTop (row.getHeight() - 146.0f);
     const float gap = 18.0f;
     const float buttonWidth = (row.getWidth() - gap * 2.0f) / 3.0f;
     row.removeFromLeft ((buttonWidth + gap) * static_cast<float> (index));
-    return row.removeFromLeft (buttonWidth).removeFromTop (110.0f);
+    return row.removeFromLeft (buttonWidth).removeFromTop (124.0f);
 }
 
 GameComponent::TitleAction GameComponent::titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const
 {
     for (int i = 0; i < 3; ++i)
-        if (titleButtonBounds (area, i).contains (position))
+        if (titleButtonBounds (area, i).expanded (10.0f, 8.0f).contains (position))
             return static_cast<TitleAction> (i + 1);
 
     return TitleAction::none;
@@ -2605,9 +3163,9 @@ juce::String GameComponent::titleActionLabel (TitleAction action) const
 {
     switch (action)
     {
-        case TitleAction::beginVoyage: return "BEGIN";
+        case TitleAction::beginVoyage: return "LOAD";
         case TitleAction::regenerateGalaxy: return "NEW";
-        case TitleAction::descend: return "DESCEND";
+        case TitleAction::descend: return "SAVE";
         case TitleAction::none: break;
     }
 
@@ -2647,51 +3205,62 @@ void GameComponent::drawHeader (juce::Graphics& g, juce::Rectangle<int> area)
 
 void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area)
 {
-    auto card = titleCardBounds (area.toFloat()).withHeight (486.0f).translated (0.0f, 14.0f);
+    auto card = titleCardBounds (area.toFloat());
 
-    juce::ColourGradient sky (juce::Colour::fromRGB (48, 146, 255),
+    juce::ColourGradient sky (juce::Colour::fromRGB (14, 28, 92),
                               area.getCentreX(), static_cast<float> (area.getY()),
-                              juce::Colour::fromRGB (22, 82, 198),
+                              juce::Colour::fromRGB (78, 20, 76),
                               area.getCentreX(), static_cast<float> (area.getBottom()),
                               false);
+    sky.addColour (0.28, juce::Colour::fromRGB (28, 82, 172));
+    sky.addColour (0.58, juce::Colour::fromRGB (138, 42, 112));
+    sky.addColour (0.82, juce::Colour::fromRGB (255, 122, 94));
     g.setGradientFill (sky);
     g.fillRoundedRectangle (card.expanded (30.0f, 24.0f), 44.0f);
-    juce::ColourGradient skyGloss (juce::Colour::fromRGBA (255, 255, 255, 118),
+    juce::ColourGradient skyGloss (juce::Colour::fromRGBA (198, 236, 255, 118),
                                    card.getCentreX(), card.getY() - 12.0f,
-                                   juce::Colour::fromRGBA (255, 255, 255, 0),
-                                   card.getCentreX(), card.getY() + 150.0f,
-                                   false);
+                                    juce::Colour::fromRGBA (255, 255, 255, 0),
+                                    card.getCentreX(), card.getY() + 150.0f,
+                                    false);
     g.setGradientFill (skyGloss);
     g.fillRoundedRectangle (card.expanded (30.0f, 24.0f).withHeight (174.0f), 44.0f);
 
-    auto drawCloud = [&] (juce::Point<float> centre, float cloudScale)
+    auto drawNebula = [&] (juce::Point<float> centre, float cloudScale, juce::Colour tint)
     {
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 66));
-        g.fillEllipse (juce::Rectangle<float> (72.0f * cloudScale, 42.0f * cloudScale).withCentre ({ centre.x - 26.0f * cloudScale, centre.y }));
-        g.fillEllipse (juce::Rectangle<float> (86.0f * cloudScale, 52.0f * cloudScale).withCentre (centre));
-        g.fillEllipse (juce::Rectangle<float> (66.0f * cloudScale, 38.0f * cloudScale).withCentre ({ centre.x + 34.0f * cloudScale, centre.y + 3.0f * cloudScale }));
+        g.setColour (tint.withAlpha (0.20f));
+        g.fillEllipse (juce::Rectangle<float> (92.0f * cloudScale, 56.0f * cloudScale).withCentre ({ centre.x - 26.0f * cloudScale, centre.y }));
+        g.fillEllipse (juce::Rectangle<float> (126.0f * cloudScale, 74.0f * cloudScale).withCentre (centre));
+        g.fillEllipse (juce::Rectangle<float> (88.0f * cloudScale, 48.0f * cloudScale).withCentre ({ centre.x + 38.0f * cloudScale, centre.y + 5.0f * cloudScale }));
     };
-    drawCloud ({ card.getX() + 150.0f, card.getY() + 62.0f }, 1.0f);
-    drawCloud ({ card.getRight() - 170.0f, card.getY() + 84.0f }, 0.86f);
+    drawNebula ({ card.getX() + 160.0f, card.getY() + 76.0f }, 1.0f, juce::Colour::fromRGB (92, 208, 255));
+    drawNebula ({ card.getRight() - 190.0f, card.getY() + 104.0f }, 0.96f, juce::Colour::fromRGB (255, 110, 198));
+    drawNebula ({ card.getCentreX() + 40.0f, card.getY() + 44.0f }, 0.84f, juce::Colour::fromRGB (255, 174, 82));
 
-    g.setColour (juce::Colour::fromRGBA (255, 214, 88, 104));
-    g.fillEllipse (juce::Rectangle<float> (140.0f, 140.0f).withCentre ({ card.getRight() - 120.0f, card.getY() + 88.0f }));
+    fillGlow (g, juce::Rectangle<float> (240.0f, 240.0f).withCentre ({ card.getRight() - 140.0f, card.getY() + 126.0f }),
+              juce::Colour::fromRGB (255, 196, 92), 0.24f);
+    g.setColour (juce::Colour::fromRGBA (255, 208, 96, 196));
+    g.fillEllipse (juce::Rectangle<float> (166.0f, 166.0f).withCentre ({ card.getRight() - 140.0f, card.getY() + 120.0f }));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 44));
+    g.fillEllipse (juce::Rectangle<float> (70.0f, 70.0f).withCentre ({ card.getRight() - 168.0f, card.getY() + 92.0f }));
 
     g.setColour (juce::Colour::fromRGBA (255, 255, 255, 28));
     g.fillRoundedRectangle (card.expanded (24.0f, 18.0f), 40.0f);
     g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
     g.fillRoundedRectangle (card.expanded (10.0f, 8.0f).withHeight (32.0f).translated (0.0f, 6.0f), 18.0f);
 
-    juce::ColourGradient fill (juce::Colour::fromRGBA (255, 244, 220, 244),
+    juce::ColourGradient fill (juce::Colour::fromRGBA (18, 30, 84, 232),
                                card.getCentreX(), card.getY(),
-                               juce::Colour::fromRGBA (255, 224, 170, 236),
+                               juce::Colour::fromRGBA (20, 12, 40, 242),
                                card.getCentreX(), card.getBottom(),
                                false);
+    fill.addColour (0.24, juce::Colour::fromRGBA (28, 88, 164, 228));
+    fill.addColour (0.56, juce::Colour::fromRGBA (82, 34, 122, 224));
+    fill.addColour (0.80, juce::Colour::fromRGBA (52, 18, 74, 220));
     g.setGradientFill (fill);
     g.fillRoundedRectangle (card, 32.0f);
-    g.setColour (juce::Colour::fromRGBA (142, 76, 38, 210));
+    g.setColour (juce::Colour::fromRGBA (112, 214, 255, 170));
     g.drawRoundedRectangle (card, 32.0f, 2.4f);
-    juce::ColourGradient cardGloss (juce::Colour::fromRGBA (255, 255, 255, 126),
+    juce::ColourGradient cardGloss (juce::Colour::fromRGBA (255, 255, 255, 46),
                                     card.getCentreX(), card.getY() + 6.0f,
                                     juce::Colour::fromRGBA (255, 255, 255, 0),
                                     card.getCentreX(), card.getY() + 190.0f,
@@ -2704,71 +3273,93 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     diagonalSheen.lineTo (card.getX() + 84.0f, card.getY() + 214.0f);
     diagonalSheen.lineTo (card.getX() + 12.0f, card.getY() + 214.0f);
     diagonalSheen.closeSubPath();
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 46));
+    g.setColour (juce::Colour::fromRGBA (88, 122, 182, 8));
     g.fillPath (diagonalSheen);
 
-    auto inner = card.reduced (34.0f, 28.0f);
-    auto topRow = inner.removeFromTop (156.0f);
+    auto inner = card.reduced (42.0f, 32.0f);
+    auto topRow = inner.removeFromTop (176.0f);
     inner.removeFromTop (18.0f);
-    auto actionsRow = inner.removeFromTop (126.0f);
-    inner.removeFromTop (16.0f);
+    auto actionsRow = inner.removeFromTop (116.0f);
+    inner.removeFromTop (14.0f);
     auto hintArea = inner.removeFromTop (28.0f);
 
-    auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.53f);
-    topRow.removeFromLeft (18.0f);
+    auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.55f);
+    topRow.removeFromLeft (26.0f);
     auto rightStory = topRow;
 
-    auto titleArea = leftHero.removeFromTop (66.0f);
-    auto subtitleArea = leftHero.removeFromTop (62.0f);
-    leftHero.removeFromTop (30.0f);
+    auto titleArea = leftHero.removeFromTop (98.0f);
+    leftHero.removeFromTop (8.0f);
+    auto subtitleArea = leftHero.removeFromTop (60.0f);
+    leftHero.removeFromTop (12.0f);
 
-    auto titleShadow = titleArea.translated (0.0f, 4.0f);
-    g.setColour (juce::Colour::fromRGBA (124, 56, 34, 188));
-    g.setFont (juce::FontOptions (52.0f));
-    g.drawText ("KlangKunstGalaxy", titleShadow.toNearestInt(), juce::Justification::centredLeft);
-    g.setColour (juce::Colour::fromRGB (214, 54, 54));
-    g.setFont (juce::FontOptions (52.0f));
-    g.drawText ("KlangKunstGalaxy", titleArea.toNearestInt(), juce::Justification::centredLeft);
-    g.setColour (juce::Colour::fromRGBA (255, 238, 214, 120));
-    g.fillRoundedRectangle (titleArea.withHeight (16.0f).withTrimmedLeft (8.0f).withTrimmedRight (titleArea.getWidth() * 0.28f), 8.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 104));
-    g.fillRoundedRectangle (titleArea.withHeight (10.0f).withTrimmedLeft (26.0f).withTrimmedRight (titleArea.getWidth() * 0.42f).translated (0.0f, 8.0f), 6.0f);
+    fillGlow (g, juce::Rectangle<float> (titleArea.getWidth() + 80.0f, titleArea.getHeight() + 36.0f)
+                  .withCentre ({ titleArea.getCentreX() + 14.0f, titleArea.getCentreY() + 4.0f }),
+              juce::Colour::fromRGB (255, 166, 112), 0.12f);
+    auto titleShadow = titleArea.translated (0.0f, 5.0f);
+    titleArea.removeFromTop (8.0f);
+    auto titleShadowArea = titleArea.translated (0.0f, 6.0f);
+    auto titleMain = titleArea.removeFromTop (34.0f);
+    titleArea.removeFromTop (2.0f);
+    auto titleSub = titleArea.removeFromTop (42.0f);
+    g.setColour (juce::Colour::fromRGBA (0, 0, 0, 156));
+    g.setFont (juce::FontOptions (50.0f, juce::Font::bold));
+    g.drawText ("KlangKunst", titleShadowArea.removeFromTop (38.0f).toNearestInt(), juce::Justification::centredLeft);
+    g.drawText ("Galaxy", titleShadowArea.removeFromTop (42.0f).toNearestInt(), juce::Justification::centredLeft);
+    g.setColour (juce::Colour::fromRGB (252, 244, 222));
+    g.setFont (juce::FontOptions (50.0f, juce::Font::bold));
+    g.drawText ("KlangKunst", titleMain.toNearestInt(), juce::Justification::centredLeft);
+    juce::ColourGradient galaxyWord (juce::Colour::fromRGB (255, 186, 108),
+                                     titleSub.getX(), titleSub.getY(),
+                                     juce::Colour::fromRGB (255, 108, 170),
+                                     titleSub.getRight(), titleSub.getBottom(),
+                                     false);
+    g.setGradientFill (galaxyWord);
+    g.setFont (juce::FontOptions (58.0f, juce::Font::bold));
+    g.drawText ("Galaxy", titleSub.toNearestInt(), juce::Justification::centredLeft);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 106));
+    g.fillRoundedRectangle (titleMain.withY (titleMain.getY() + 8.0f).withHeight (11.0f).withTrimmedRight (titleMain.getWidth() * 0.28f), 5.5f);
+    g.setColour (juce::Colour::fromRGBA (255, 192, 116, 182));
+    g.fillRoundedRectangle (titleSub.withY (titleSub.getBottom() - 8.0f).withHeight (8.0f).withTrimmedRight (titleSub.getWidth() * 0.42f), 4.0f);
 
-    g.setColour (juce::Colour::fromRGBA (96, 60, 44, 236));
-    g.setFont (juce::FontOptions (17.5f));
-    g.drawFittedText ("Part instrument, part star atlas, part architectural sandbox. Explore a seeded galaxy, descend onto a planet, and build persistent musical worlds block by block.",
+    g.setColour (juce::Colour::fromRGBA (214, 232, 255, 220));
+    g.setFont (juce::FontOptions (15.5f));
+    g.drawFittedText ("Explore. Build. Play.",
                       subtitleArea.toNearestInt(),
                       juce::Justification::topLeft,
                       3);
 
-    for (int i = 0; i < 5; ++i)
+    juce::Path motifLine;
+    const float motifY = subtitleArea.getY() + 10.0f;
+    motifLine.startNewSubPath (subtitleArea.getRight() - 10.0f, motifY);
+    motifLine.lineTo (subtitleArea.getRight() + 170.0f, motifY);
+    g.setColour (juce::Colour::fromRGBA (160, 220, 255, 64));
+    g.strokePath (motifLine, juce::PathStrokeType (1.2f));
+    for (int i = 0; i < 3; ++i)
     {
-        const float t = static_cast<float> (i) / 4.0f;
-        auto sparkle = juce::Rectangle<float> (10.0f + 3.0f * (i % 2), 10.0f + 3.0f * (i % 2))
-                           .withCentre ({ leftHero.getX() + 28.0f + t * 250.0f,
-                                          titleArea.getBottom() + 16.0f + std::sin (t * 6.28f) * 6.0f });
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
-        g.fillEllipse (sparkle);
+        const auto x = subtitleArea.getRight() + 34.0f + static_cast<float> (i) * 78.0f;
+        const auto size = (i == 1) ? 14.0f : 10.0f;
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, static_cast<juce::uint8> (96 - i * 12)));
+        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, motifY }));
     }
 
-    g.setColour (juce::Colour::fromRGBA (96, 172, 84, 228));
+    g.setColour (juce::Colour::fromRGBA (24, 28, 74, 212));
     g.fillRoundedRectangle (rightStory, 22.0f);
-    g.setColour (juce::Colour::fromRGBA (72, 124, 58, 188));
+    g.setColour (juce::Colour::fromRGBA (126, 224, 255, 168));
     g.drawRoundedRectangle (rightStory, 22.0f, 1.8f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
     g.fillRoundedRectangle (rightStory.withHeight (18.0f).reduced (10.0f, 2.0f), 10.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 16));
     g.fillRoundedRectangle (rightStory.reduced (10.0f, 12.0f).withHeight (44.0f), 18.0f);
 
-    auto storyInner = rightStory.reduced (18.0f, 16.0f);
-    auto boardArea = storyInner.removeFromTop (96.0f);
+    auto storyInner = rightStory.reduced (18.0f, 18.0f);
+    auto boardArea = storyInner.removeFromTop (78.0f);
     storyInner.removeFromTop (12.0f);
     auto stepsArea = storyInner;
 
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 54));
-    g.fillEllipse (boardArea.expanded (0.0f, 22.0f));
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 26));
-    g.fillEllipse (boardArea.expanded (-24.0f, 2.0f).translated (0.0f, -6.0f));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 44));
+    g.fillEllipse (boardArea.expanded (0.0f, 18.0f));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
+    g.fillEllipse (boardArea.expanded (-20.0f, 0.0f).translated (0.0f, -4.0f));
 
     auto boardRect = boardArea.withSizeKeepingCentre (186.0f, 96.0f);
     juce::Path isoBoard;
@@ -2781,9 +3372,9 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     isoBoard.lineTo (c);
     isoBoard.lineTo (d);
     isoBoard.closeSubPath();
-    g.setColour (juce::Colour::fromRGBA (54, 102, 46, 236));
+    g.setColour (juce::Colour::fromRGBA (34, 72, 156, 228));
     g.fillPath (isoBoard);
-    g.setColour (juce::Colour::fromRGBA (72, 124, 58, 188));
+    g.setColour (juce::Colour::fromRGBA (140, 226, 255, 144));
     g.strokePath (isoBoard, juce::PathStrokeType (2.0f));
     juce::Path boardSheen;
     boardSheen.startNewSubPath ({ boardRect.getCentreX(), boardRect.getY() + 6.0f });
@@ -2849,37 +3440,58 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
         g.fillRoundedRectangle (juce::Rectangle<float> (w * 0.28f, 4.0f).withCentre ({ centre.x - 2.0f, centre.y - rise + 8.0f }), 2.0f);
     };
-    drawMiniBlock ({ boardRect.getCentreX() - 42.0f, boardRect.getCentreY() + 24.0f }, juce::Colour::fromRGB (255, 204, 78));
-    drawMiniBlock ({ boardRect.getCentreX() - 8.0f, boardRect.getCentreY() + 4.0f }, juce::Colour::fromRGB (226, 78, 62));
-    drawMiniBlock ({ boardRect.getCentreX() + 28.0f, boardRect.getCentreY() + 20.0f }, juce::Colour::fromRGB (90, 188, 88));
-    drawMiniBlock ({ boardRect.getCentreX() + 58.0f, boardRect.getCentreY() - 8.0f }, juce::Colour::fromRGB (88, 176, 250));
+    drawMiniBlock ({ boardRect.getCentreX() - 42.0f, boardRect.getCentreY() + 24.0f }, juce::Colour::fromRGB (255, 214, 84));
+    drawMiniBlock ({ boardRect.getCentreX() - 8.0f, boardRect.getCentreY() + 4.0f }, juce::Colour::fromRGB (255, 96, 92));
+    drawMiniBlock ({ boardRect.getCentreX() + 28.0f, boardRect.getCentreY() + 20.0f }, juce::Colour::fromRGB (116, 224, 110));
+    drawMiniBlock ({ boardRect.getCentreX() + 58.0f, boardRect.getCentreY() - 8.0f }, juce::Colour::fromRGB (92, 198, 255));
 
-    auto groundStrip = juce::Rectangle<float> (boardRect.getX() - 12.0f, boardRect.getBottom() + 8.0f, boardRect.getWidth() + 24.0f, 16.0f);
-    g.setColour (juce::Colour::fromRGBA (142, 94, 48, 188));
-    g.fillRoundedRectangle (groundStrip, 8.0f);
-    for (int i = 0; i < 8; ++i)
+    auto legendArea = juce::Rectangle<float> (boardArea.getX() + 12.0f, boardArea.getBottom() + 8.0f, boardArea.getWidth() - 24.0f, 54.0f);
+    const float legendGap = 8.0f;
+    const float legendRowHeight = (legendArea.getHeight() - legendGap * 2.0f) / 3.0f;
+    const std::array<juce::Colour, 3> legendColours {
+        juce::Colour::fromRGB (255, 120, 168),
+        juce::Colour::fromRGB (255, 196, 92),
+        juce::Colour::fromRGB (92, 214, 255)
+    };
+    for (int i = 0; i < 3; ++i)
     {
-        auto brick = juce::Rectangle<float> (groundStrip.getX() + i * groundStrip.getWidth() / 8.0f,
-                                             groundStrip.getY(),
-                                             groundStrip.getWidth() / 8.0f - 2.0f,
-                                             groundStrip.getHeight());
-        g.setColour ((i % 2) == 0 ? juce::Colour::fromRGBA (188, 126, 70, 180)
-                                  : juce::Colour::fromRGBA (166, 108, 58, 180));
-        g.fillRoundedRectangle (brick, 4.0f);
+        auto row = legendArea.removeFromTop (legendRowHeight);
+        if (i < 2)
+            legendArea.removeFromTop (legendGap);
+
+        g.setColour (juce::Colour::fromRGBA (18, 24, 58, 188));
+        g.fillRoundedRectangle (row, row.getHeight() * 0.5f);
+        g.setColour (juce::Colour::fromRGBA (112, 214, 255, 110));
+        g.drawRoundedRectangle (row, row.getHeight() * 0.5f, 1.0f);
+
+        auto badge = row.removeFromLeft (28.0f).reduced (2.0f);
+        g.setColour (legendColours[static_cast<size_t> (i)].withAlpha (0.92f));
+        g.fillEllipse (badge);
+        g.setColour (juce::Colours::white.withAlpha (0.84f));
+        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.drawText (juce::String (i + 1), badge.toNearestInt(), juce::Justification::centred);
+
+        row.removeFromLeft (8.0f);
+        auto barBounds = row.reduced (0.0f, 3.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 12));
+        g.fillRoundedRectangle (barBounds.withHeight (8.0f), 4.0f);
+        const auto fillWidth = barBounds.getWidth() * (0.18f + 0.22f * static_cast<float> (i));
+        g.setColour (legendColours[static_cast<size_t> (i)].withAlpha (0.68f));
+        g.fillRoundedRectangle (barBounds.withWidth (fillWidth).withHeight (8.0f), 4.0f);
     }
 
     auto drawStep = [&] (juce::Rectangle<float> bounds, const juce::String& num, const juce::String& label, const juce::String& desc)
     {
-        g.setColour (juce::Colour::fromRGBA (255, 248, 232, 214));
+        g.setColour (juce::Colour::fromRGBA (18, 26, 64, 224));
         g.fillRoundedRectangle (bounds, 16.0f);
-        g.setColour (juce::Colour::fromRGBA (144, 86, 44, 122));
+        g.setColour (juce::Colour::fromRGBA (114, 214, 255, 112));
         g.drawRoundedRectangle (bounds, 16.0f, 1.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 68));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
         g.fillRoundedRectangle (bounds.reduced (8.0f, 6.0f).withHeight (16.0f), 8.0f);
         auto numBubble = bounds.removeFromLeft (44.0f).reduced (4.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 92, 74, 220));
+        g.setColour (juce::Colour::fromRGBA (255, 124, 124, 220));
         g.fillRoundedRectangle (numBubble, 12.0f);
-        g.setColour (juce::Colour::fromRGBA (124, 42, 30, 150));
+        g.setColour (juce::Colour::fromRGBA (255, 214, 150, 100));
         g.drawRoundedRectangle (numBubble, 12.0f, 1.2f);
         g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
         g.fillRoundedRectangle (numBubble.reduced (5.0f, 4.0f).withHeight (8.0f), 6.0f);
@@ -2887,22 +3499,22 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         g.setFont (juce::FontOptions (16.0f));
         g.drawText (num, numBubble.toNearestInt(), juce::Justification::centred);
         auto textArea = bounds.reduced (12.0f, 8.0f);
-        g.setColour (juce::Colour::fromRGBA (110, 64, 40, 244));
+        g.setColour (juce::Colours::white);
         g.setFont (juce::FontOptions (16.0f));
         g.drawText (label, textArea.removeFromTop (20.0f).toNearestInt(), juce::Justification::centredLeft);
-        g.setColour (juce::Colour::fromRGBA (122, 86, 56, 216));
+        g.setColour (juce::Colour::fromRGBA (210, 228, 255, 202));
         g.setFont (juce::FontOptions (13.5f));
         g.drawFittedText (desc, textArea.toNearestInt(), juce::Justification::topLeft, 2);
     };
     const float stepGap = 10.0f;
     const float stepHeight = (stepsArea.getHeight() - stepGap * 2.0f) / 3.0f;
-    drawStep (stepsArea.removeFromTop (stepHeight), "1", "Chart the galaxy", "Generate a seeded starfield and travel system to system through lightweight musical metadata.");
+    drawStep (stepsArea.removeFromTop (stepHeight), "1", "Chart the galaxy", "Drift between seeded constellations and pick a system from a living cosmic atlas.");
     stepsArea.removeFromTop (stepGap);
-    drawStep (stepsArea.removeFromTop (stepHeight), "2", "Descend to a planet", "Cut from orbit into a persistent planet surface that only materialises when you land.");
+    drawStep (stepsArea.removeFromTop (stepHeight), "2", "Descend to a planet", "Drop from the overture of space into a world that materialises only when you commit to land.");
     stepsArea.removeFromTop (stepGap);
-    drawStep (stepsArea.removeFromTop (stepHeight), "3", "Build the world", "Shape the empty voxel surface into a musical planet and leave it changed when you return to space.");
+    drawStep (stepsArea.removeFromTop (stepHeight), "3", "Build the world", "Shape the silent surface into a persistent musical landscape and hear it answer back.");
 
-    const float buttonGap = 18.0f;
+    const float buttonGap = 26.0f;
     const float buttonWidth = (actionsRow.getWidth() - buttonGap * 2.0f) / 3.0f;
     const std::array<TitleAction, 3> actions { TitleAction::beginVoyage, TitleAction::regenerateGalaxy, TitleAction::descend };
     const std::array<juce::String, 3> captions {
@@ -2919,24 +3531,31 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         const float pulse = hovered ? (0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.006))) : 0.0f;
         const float lift = hovered ? -4.0f : 0.0f;
         button = button.translated (0.0f, lift);
-        g.setColour (juce::Colour::fromRGBA (112, 56, 36, hovered ? 118 : 74));
+        g.setColour (juce::Colour::fromRGBA (0, 0, 0, hovered ? 118 : 74));
         g.fillRoundedRectangle (button.translated (0.0f, 6.0f), 22.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 44 : 28));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 38 : 18));
         g.fillRoundedRectangle (button.translated (0.0f, 2.0f), 22.0f);
-        juce::ColourGradient buttonFill (hovered ? juce::Colour::fromRGBA (255, 120, 86, 248)
-                                                 : juce::Colour::fromRGBA (232, 86, 68, 234),
+        juce::ColourGradient buttonFill ((i == 0)
+                                             ? (hovered ? juce::Colour::fromRGBA (34, 118, 214, 246)
+                                                        : juce::Colour::fromRGBA (24, 70, 154, 234))
+                                             : ((i == 1)
+                                                    ? (hovered ? juce::Colour::fromRGBA (186, 86, 220, 246)
+                                                               : juce::Colour::fromRGBA (118, 42, 172, 234))
+                                                    : (hovered ? juce::Colour::fromRGBA (255, 128, 96, 246)
+                                                               : juce::Colour::fromRGBA (184, 66, 94, 234))),
                                          button.getCentreX(), button.getY(),
-                                         hovered ? juce::Colour::fromRGBA (214, 52, 42, 246)
-                                                 : juce::Colour::fromRGBA (186, 46, 42, 228),
+                                         (i == 0) ? juce::Colour::fromRGBA (10, 20, 64, 248)
+                                                  : ((i == 1) ? juce::Colour::fromRGBA (34, 10, 68, 248)
+                                                              : juce::Colour::fromRGBA (58, 14, 48, 248)),
                                          button.getCentreX(), button.getBottom(),
                                          false);
         g.setGradientFill (buttonFill);
         g.fillRoundedRectangle (button, 22.0f);
-        g.setColour (hovered ? juce::Colour::fromRGBA (255, 232, 164, static_cast<uint8_t> (188 + 34 * pulse))
-                             : juce::Colour::fromRGBA (124, 42, 30, 138));
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 222, 150, static_cast<uint8_t> (184 + 34 * pulse))
+                             : juce::Colour::fromRGBA (110, 214, 255, 138));
         g.drawRoundedRectangle (button, 22.0f, hovered ? 2.6f : 1.4f);
-        g.setColour (hovered ? juce::Colour::fromRGBA (255, 184, 116, static_cast<uint8_t> (50 + 28 * pulse))
-                             : juce::Colour::fromRGBA (255, 136, 94, 42));
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 176, 112, static_cast<uint8_t> (40 + 28 * pulse))
+                             : juce::Colour::fromRGBA (92, 190, 255, 30));
         g.fillRoundedRectangle (button.reduced (5.0f, 5.0f), 18.0f);
         g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 78 : 52));
         g.fillRoundedRectangle (button.withHeight (18.0f).reduced (12.0f, 4.0f), 10.0f);
@@ -2950,40 +3569,50 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         buttonSweep.closeSubPath();
         g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 56 : 34));
         g.fillPath (buttonSweep);
-        auto buttonInner = button.reduced (20.0f, 16.0f);
+        auto buttonInner = button.reduced (20.0f, 14.0f);
         auto topStrip = buttonInner.removeFromTop (22.0f);
         auto actionTag = topStrip.removeFromLeft (56.0f);
-        g.setColour (hovered ? juce::Colour::fromRGBA (255, 222, 152, 118)
-                             : juce::Colour::fromRGBA (255, 214, 146, 76));
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 210, 140, 118)
+                             : juce::Colour::fromRGBA (112, 214, 255, 78));
         g.fillRoundedRectangle (actionTag, 11.0f);
         g.setColour (juce::Colours::white);
         g.setFont (juce::FontOptions (12.5f));
         g.drawText ("STEP", actionTag.toNearestInt(), juce::Justification::centred);
-        buttonInner.removeFromTop (8.0f);
+        buttonInner.removeFromTop (10.0f);
         g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (23.0f));
+        g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
         g.drawText (titleActionLabel (actions[i]), buttonInner.removeFromTop (30.0f).toNearestInt(), juce::Justification::centredLeft);
-        g.setColour (juce::Colour::fromRGBA (255, 236, 212, 218));
-        g.setFont (juce::FontOptions (14.5f));
-        g.drawFittedText (captions[i], buttonInner.toNearestInt(), juce::Justification::topLeft, 3);
+        buttonInner.removeFromTop (4.0f);
+        g.setColour (juce::Colour::fromRGBA (216, 232, 255, 218));
+        g.setFont (juce::FontOptions (14.0f));
+        g.drawFittedText ((i == 0) ? "Resume the current galaxy and continue charting your route."
+                                   : ((i == 1) ? "Generate a fresh seeded cosmos and begin a new voyage."
+                                               : "Commit the current state of your galaxy and planets."),
+                          buttonInner.toNearestInt(), juce::Justification::topLeft, 3);
     }
 
-    auto footerCloud = hintArea.withTrimmedTop (4.0f).reduced (40.0f, 0.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 104));
+    auto footerCloud = hintArea.withTrimmedTop (2.0f).reduced (56.0f, 0.0f);
+    g.setColour (juce::Colour::fromRGBA (18, 24, 58, 214));
     g.fillRoundedRectangle (footerCloud, 14.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 56));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
     g.fillRoundedRectangle (footerCloud.withHeight (10.0f).reduced (14.0f, 1.0f), 8.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 74));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
     g.fillRoundedRectangle (footerCloud.reduced (18.0f, 6.0f).withHeight (8.0f), 6.0f);
-    g.setColour (juce::Colour::fromRGBA (106, 66, 42, 220));
+    g.setColour (juce::Colour::fromRGBA (216, 232, 255, 220));
     g.setFont (juce::FontOptions (13.0f));
-    g.drawText ("Enter or N begins   R makes a new galaxy   D descends to the selected planet",
+    g.drawText ("Load continues   New starts fresh   Save preserves the current voyage",
                 footerCloud.toNearestInt(),
                 juce::Justification::centred);
 }
 
 void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area)
 {
+    if (galaxyLogOpen)
+    {
+        drawGalaxyLogbook (g, area);
+        return;
+    }
+
     auto mapArea = area.removeFromLeft (area.proportionOfWidth (0.57f)).reduced (10);
     auto sideArea = area.reduced (10);
     const float uiScale = juce::jlimit (0.82f, 1.0f,
@@ -2999,6 +3628,9 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     drawReferencePanel (sideArea);
 
     auto mapFloat = mapArea.toFloat();
+    const auto& system = getSelectedSystem();
+    const auto selectedPoint = juce::Point<float> (static_cast<float> (mapArea.getX()) + system.galaxyPosition.x * static_cast<float> (mapArea.getWidth()),
+                                                   static_cast<float> (mapArea.getY()) + system.galaxyPosition.y * static_cast<float> (mapArea.getHeight()));
     juce::ColourGradient mapWash (juce::Colour::fromRGBA (26, 42, 96, 178),
                                   mapFloat.getX(), mapFloat.getY(),
                                   juce::Colour::fromRGBA (8, 16, 46, 34),
@@ -3007,6 +3639,16 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     mapWash.addColour (0.40, juce::Colour::fromRGBA (24, 88, 188, 74));
     g.setGradientFill (mapWash);
     g.fillRoundedRectangle (mapFloat.reduced (8.0f), 18.0f);
+
+    juce::Path travelRings;
+    for (int i = 0; i < 4; ++i)
+    {
+        const float w = mapFloat.getWidth() * (0.26f + 0.16f * static_cast<float> (i));
+        const float h = mapFloat.getHeight() * (0.12f + 0.09f * static_cast<float> (i));
+        travelRings.addEllipse (juce::Rectangle<float> (w, h).withCentre (selectedPoint));
+    }
+    g.setColour (juce::Colour::fromRGBA (126, 220, 255, 34));
+    g.strokePath (travelRings, juce::PathStrokeType (1.1f));
 
     fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.4f,
                                          mapArea.getY() + mapArea.getHeight() * 0.1f,
@@ -3025,7 +3667,25 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
                                          mapArea.getHeight() * 0.24f),
               juce::Colour::fromRGB (255, 112, 164), 0.10f);
 
+    fillGlow (g, juce::Rectangle<float> (selectedPoint.x - mapArea.getWidth() * 0.20f,
+                                         selectedPoint.y - mapArea.getHeight() * 0.18f,
+                                         mapArea.getWidth() * 0.40f,
+                                         mapArea.getHeight() * 0.36f),
+              juce::Colour::fromRGB (128, 214, 255), 0.12f);
+
+    juce::Random farDust (0x47614C41);
+    for (int i = 0; i < 170; ++i)
+    {
+        const float x = mapFloat.getX() + farDust.nextFloat() * mapFloat.getWidth();
+        const float y = mapFloat.getY() + farDust.nextFloat() * mapFloat.getHeight();
+        const float size = 0.6f + farDust.nextFloat() * 1.4f;
+        const float alpha = 0.05f + farDust.nextFloat() * 0.18f;
+        g.setColour (juce::Colour::fromRGBA (188, 220, 255, static_cast<uint8_t> (alpha * 255.0f)));
+        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, y }));
+    }
+
     juce::Path constellationLines;
+    juce::Path routePath;
     for (int i = 0; i < galaxy.systems.size(); ++i)
     {
         const auto& system = *galaxy.systems.getUnchecked (i);
@@ -3060,9 +3720,23 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
             constellationLines.startNewSubPath (x, y);
             constellationLines.lineTo (nearestPoint);
         }
+
+        if (i == selectedSystemIndex)
+            continue;
+
+        const float dx = x - selectedPoint.x;
+        const float dy = y - selectedPoint.y;
+        const float distance = std::sqrt (dx * dx + dy * dy);
+        if (distance < mapArea.getWidth() * 0.34f)
+        {
+            routePath.startNewSubPath (selectedPoint);
+            routePath.lineTo (x, y);
+        }
     }
     g.setColour (juce::Colour::fromRGBA (124, 196, 255, 30));
     g.strokePath (constellationLines, juce::PathStrokeType (1.0f));
+    g.setColour (juce::Colour::fromRGBA (255, 224, 158, 58));
+    g.strokePath (routePath, juce::PathStrokeType (1.4f));
 
     juce::Random starDust (0x4B4C414E);
     for (int i = 0; i < 90; ++i)
@@ -3109,10 +3783,14 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
             g.drawEllipse (static_cast<float> (x - 12), static_cast<float> (y - 12), 24.0f, 24.0f, 1.5f);
             g.setColour (juce::Colour::fromRGBA (255, 246, 214, 86));
             g.drawEllipse (static_cast<float> (x - 18), static_cast<float> (y - 18), 36.0f, 36.0f, 1.2f);
+            g.setColour (juce::Colour::fromRGBA (255, 240, 208, 220));
+            g.setFont (juce::FontOptions (12.0f * uiScale));
+            g.drawFittedText (system.name.toUpperCase(),
+                              juce::Rectangle<int> (x + 16, y - 12, 140, 24),
+                              juce::Justification::centredLeft, 1);
         }
     }
 
-    const auto& system = getSelectedSystem();
     auto inner = sideArea.toFloat().reduced (16.0f * uiScale, 16.0f * uiScale);
     auto topRow = inner.removeFromTop (44.0f * uiScale);
     auto modePill = topRow.removeFromLeft (topRow.getWidth() * 0.36f);
@@ -3149,7 +3827,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     g.drawRoundedRectangle (detailChip, 8.0f, 1.1f);
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (12.0f * uiScale));
-    g.drawFittedText ("Arrows select systems and planets   Enter lands   Metadata stays lightweight until descent",
+    g.drawFittedText ("Travel the seeded galaxy   Arrows drift between systems and planets   Enter descends when you find a world worth landing on",
                       detailChip.reduced (14.0f, 6.0f).toNearestInt(),
                       juce::Justification::centredLeft, 2);
 
@@ -3183,9 +3861,9 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     inner.removeFromTop (8.0f * uiScale);
     auto statRowB = inner.removeFromTop (54.0f * uiScale);
     const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
-    drawStat (statRowB.removeFromLeft (statWidthB), "SCALE", "Chromatic");
+    drawStat (statRowB.removeFromLeft (statWidthB), "RANGE", juce::String (juce::roundToInt (system.galaxyPosition.getDistanceFrom ({ 0.5f, 0.5f }) * 100.0f)) + "% rim");
     statRowB.removeFromLeft (statGap);
-    drawStat (statRowB.removeFromLeft (statWidthB), "SYNTH", "Atlas");
+    drawStat (statRowB.removeFromLeft (statWidthB), "DISCOVERY", juce::String (juce::roundToInt ((system.planets.size() / 7.0f) * 100.0f)) + "%");
 
     inner.removeFromTop (10.0f * uiScale);
     auto drawChip = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
@@ -3219,7 +3897,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     auto infoRowB = inner.removeFromTop (30.0f * uiScale);
     drawChip (infoRowB.removeFromLeft (chipW), "Orbit", juce::String (getSelectedPlanet().orbitIndex + 1));
     infoRowB.removeFromLeft (gap);
-    drawChip (infoRowB.removeFromLeft (chipW), "Root", juce::String (getSelectedPlanet().musicalRootHz, 1) + " Hz");
+    drawChip (infoRowB.removeFromLeft (chipW), "Signal", juce::String (getSelectedPlanet().musicalRootHz, 1) + " Hz");
 
     inner.removeFromTop (10.0f * uiScale);
     auto listArea = inner.removeFromTop (juce::jmin (252.0f * uiScale, inner.getHeight() - 52.0f * uiScale));
@@ -3243,7 +3921,9 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         g.drawFittedText (planet.name, text.removeFromTop (15.0f * uiScale).toNearestInt(), juce::Justification::centredLeft, 1);
         g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
         g.setFont (juce::FontOptions (11.0f * uiScale));
-        g.drawFittedText ("water " + juce::String (planet.water, 2) + "   energy " + juce::String (planet.energy, 2),
+        g.drawFittedText ("water " + juce::String (planet.water, 2) + "   energy " + juce::String (planet.energy, 2)
+                          + "   build " + getPlanetBuildModeName (planet.assignedBuildMode)
+                          + "   perf " + getPlanetPerformanceModeName (planet.assignedPerformanceMode),
                           text.toNearestInt(), juce::Justification::centredLeft, 1);
         listArea.removeFromTop (6.0f * uiScale);
     }
@@ -3256,8 +3936,110 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     g.drawRoundedRectangle (footerRow, 8.0f, 1.0f);
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
     g.setFont (juce::FontOptions (11.5f * uiScale));
-    g.drawFittedText ("Selected  " + system.name + " / " + getSelectedPlanet().name + "   Enter lands   surfaces generate on demand",
+    g.drawFittedText ("Now charting  " + system.name + " / " + getSelectedPlanet().name + "   Enter descends   surfaces only resolve when you commit to landing",
                       footerRow.reduced (12.0f, 6.0f).toNearestInt(), juce::Justification::centredLeft, 2);
+}
+
+void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto bounds = area.reduced (14);
+    auto page = bounds.toFloat();
+
+    g.setColour (juce::Colour::fromRGBA (24, 14, 10, 210));
+    g.fillRoundedRectangle (page, 18.0f);
+
+    auto paper = page.reduced (20.0f);
+    juce::ColourGradient paperWash (juce::Colour::fromRGB (225, 211, 182), paper.getX(), paper.getY(),
+                                    juce::Colour::fromRGB (198, 180, 148), paper.getRight(), paper.getBottom(), false);
+    paperWash.addColour (0.48, juce::Colour::fromRGB (235, 224, 198));
+    g.setGradientFill (paperWash);
+    g.fillRoundedRectangle (paper, 12.0f);
+    g.setColour (juce::Colour::fromRGBA (82, 46, 28, 180));
+    g.drawRoundedRectangle (paper, 12.0f, 1.6f);
+
+    g.setColour (juce::Colour::fromRGBA (120, 88, 62, 56));
+    for (int i = 0; i < 22; ++i)
+    {
+        const float y = paper.getY() + 64.0f + i * 30.0f;
+        if (y > paper.getBottom() - 24.0f)
+            break;
+        g.drawLine (paper.getX() + 34.0f, y, paper.getRight() - 28.0f, y, 0.8f);
+    }
+
+    const float spineX = paper.getX() + 58.0f;
+    g.setColour (juce::Colour::fromRGBA (156, 60, 44, 110));
+    g.drawLine (spineX, paper.getY() + 20.0f, spineX, paper.getBottom() - 20.0f, 2.0f);
+
+    auto header = paper.reduced (28.0f);
+    auto titleArea = header.removeFromTop (54.0f);
+    g.setColour (juce::Colour::fromRGB (73, 39, 26));
+    g.setFont (juce::FontOptions (28.0f));
+    g.drawText ("Exploration Logbook", titleArea.toNearestInt(), juce::Justification::centredLeft);
+    g.setFont (juce::FontOptions (14.0f));
+    g.setColour (juce::Colour::fromRGBA (86, 58, 42, 220));
+    g.drawFittedText ("L closes the log   Esc returns to the map", header.removeFromTop (22.0f).toNearestInt(),
+                      juce::Justification::centredLeft, 1);
+
+    auto entries = persistence.getVisitLog();
+    auto listArea = header.reduced (0.0f, 10.0f);
+
+    if (entries.empty())
+    {
+        g.setColour (juce::Colour::fromRGBA (76, 54, 38, 220));
+        g.setFont (juce::FontOptions (20.0f));
+        g.drawFittedText ("No worlds entered yet. Land on a planet to add the first page.", listArea.toNearestInt(),
+                          juce::Justification::centred, 2);
+        return;
+    }
+
+    const int maxEntries = juce::jmax (1, static_cast<int> ((listArea.getHeight() - 20.0f) / 92.0f));
+    int shown = 0;
+    for (const auto& entry : entries)
+    {
+        if (shown >= maxEntries)
+            break;
+
+        auto row = listArea.removeFromTop (84.0f);
+        g.setColour (juce::Colour::fromRGBA (104, 73, 54, 28));
+        g.fillRoundedRectangle (row, 8.0f);
+        g.setColour (juce::Colour::fromRGBA (92, 62, 44, 90));
+        g.drawRoundedRectangle (row, 8.0f, 1.0f);
+
+        auto ink = row.reduced (16.0f, 10.0f);
+        auto dot = ink.removeFromLeft (18.0f).withSizeKeepingCentre (12.0f, 12.0f);
+        g.setColour (entry.accent);
+        g.fillEllipse (dot);
+        ink.removeFromLeft (10.0f);
+
+        auto top = ink.removeFromTop (22.0f);
+        g.setColour (juce::Colour::fromRGB (70, 38, 26));
+        g.setFont (juce::FontOptions (18.0f));
+        g.drawFittedText (entry.planetName + "  |  " + entry.systemName, top.toNearestInt(), juce::Justification::centredLeft, 1);
+
+        g.setFont (juce::FontOptions (13.0f));
+        g.setColour (juce::Colour::fromRGBA (82, 58, 42, 230));
+        auto mid = ink.removeFromTop (18.0f);
+        g.drawFittedText ("orbit " + juce::String (entry.orbitIndex + 1)
+                          + "   root " + juce::String (entry.musicalRootHz, 1) + " Hz"
+                          + "   mode " + getPlanetBuildModeName (entry.assignedBuildMode)
+                          + "   perf " + getPlanetPerformanceModeName (entry.assignedPerformanceMode)
+                          + "   visits " + juce::String (entry.visitCount),
+                          mid.toNearestInt(), juce::Justification::centredLeft, 1);
+
+        auto bottom = ink.removeFromTop (18.0f);
+        g.drawFittedText ("water " + juce::String (entry.water, 2)
+                          + "   energy " + juce::String (entry.energy, 2)
+                          + "   atmosphere " + juce::String (entry.atmosphere, 2),
+                          bottom.toNearestInt(), juce::Justification::centredLeft, 1);
+
+        auto stamp = ink.removeFromTop (16.0f);
+        g.setColour (juce::Colour::fromRGBA (112, 40, 34, 210));
+        g.drawFittedText ("last logged " + entry.lastVisitedUtc.replaceCharacter ('T', ' '),
+                          stamp.toNearestInt(), juce::Justification::centredLeft, 1);
+
+        listArea.removeFromTop (8.0f);
+        ++shown;
+    }
 }
 
 void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> area)
@@ -3437,6 +4219,11 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     infoRowB.removeFromLeft (infoGap);
     drawInfoChip (infoRowB.removeFromLeft (infoWidth), "Energy  " + juce::String (planet.energy, 2));
 
+    inner.removeFromTop (8.0f * uiScale);
+    auto infoRowC = inner.removeFromTop (30.0f * uiScale);
+    drawInfoChip (infoRowC, "Build  " + getPlanetBuildModeName (planet.assignedBuildMode)
+                            + "   |   Performance  " + getPlanetPerformanceModeName (planet.assignedPerformanceMode));
+
     inner.removeFromTop (10.0f * uiScale);
     auto bodyChip = inner.removeFromTop (68.0f * uiScale);
     drawInfoChip (bodyChip, "Landing is the seam between galaxy metadata and a concrete planet volume. If you built here before, the voxel stack has already been restored.");
@@ -3477,7 +4264,7 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
 {
     ensureActivePlanetLoaded();
 
-    if (builderViewMode == BuilderViewMode::firstPerson)
+    if (builderViewMode == BuilderViewMode::firstPerson && topDownBuildMode == TopDownBuildMode::none)
     {
         drawFirstPersonBuilder (g, area.reduced (8));
         return;
@@ -3516,6 +4303,10 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
 
     if (performanceMode)
         drawPerformanceView (g, gridArea.toFloat());
+    else if (topDownBuildMode == TopDownBuildMode::tetris)
+        drawTetrisBuildView (g, gridArea.toFloat());
+    else if (topDownBuildMode == TopDownBuildMode::cellularAutomata)
+        drawAutomataBuildView (g, gridArea.toFloat());
     else if (builderViewMode == BuilderViewMode::firstPerson)
         drawFirstPersonBuilder (g, gridArea);
     else
@@ -3561,10 +4352,15 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     auto titleRow = headerInner.removeFromTop (22.0f * uiScale);
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (16.0f * uiScale));
-    g.drawText ("ISOMETRIC EDIT", titleRow.toNearestInt(), juce::Justification::centredLeft);
+    g.drawText ((topDownBuildMode == TopDownBuildMode::tetris ? "TETRIS BUILD"
+                  : topDownBuildMode == TopDownBuildMode::cellularAutomata ? "CELLULAR AUTOMATA"
+                  : "ISOMETRIC EDIT"),
+                titleRow.toNearestInt(), juce::Justification::centredLeft);
     g.setColour (juce::Colour::fromRGBA (186, 224, 255, 210));
     g.setFont (juce::FontOptions (11.5f * uiScale));
-    g.drawFittedText (getSelectedPlanet().name.toUpperCase() + "   |   " + getIsometricChordName().toUpperCase(),
+    g.drawFittedText (getSelectedPlanet().name.toUpperCase() + "   |   "
+                      + (topDownBuildMode == TopDownBuildMode::none ? getIsometricChordName().toUpperCase()
+                                                                    : getTopDownBuildModeName().toUpperCase()),
                       headerInner.toNearestInt(), juce::Justification::centredLeft, 1);
 
     inner.removeFromTop (14.0f * uiScale);
@@ -3574,7 +4370,12 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     drawLabel (controlsInner.removeFromTop (16.0f * uiScale), "CONTROLS");
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (11.6f * uiScale));
-    g.drawFittedText ("Pan WASD   Rotate Q/E   Height [ ]   Notes 1-4\nCycle chord V   Place click/P   Delete X   Exit Esc",
+    const juce::String controlsText = topDownBuildMode == TopDownBuildMode::tetris
+                                        ? "Move arrows   Layer [ ]   Notes 1-4   Chord V\nRotate R   New N   Soft drop S   Hard drop Space   Place click/O   Delete X"
+                                        : topDownBuildMode == TopDownBuildMode::cellularAutomata
+                                            ? "Move arrows   Layer [ ]   Notes 1-4\nSeed click/O   Delete X   Randomise N   E evolve next layer"
+                                            : "Pan WASD   Rotate Q/E   Height [ ]   Notes 1-4\nCycle chord V   Place click/O   Delete X   Exit Esc";
+    g.drawFittedText (controlsText,
                       controlsInner.toNearestInt(),
                       juce::Justification::topLeft,
                       3);
@@ -3589,13 +4390,26 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     const float gap = 10.0f * uiScale;
     auto statsTop = inner.removeFromTop (60.0f * uiScale);
     const float twoCol = (statsTop.getWidth() - gap) / 2.0f;
-    drawValueCard (statsTop.removeFromLeft (twoCol), "ROOT", getNoteNameForLayer (builderLayer));
+    drawValueCard (statsTop.removeFromLeft (twoCol), topDownBuildMode == TopDownBuildMode::tetris ? "PIECE"
+                                                  : topDownBuildMode == TopDownBuildMode::cellularAutomata ? "RULE"
+                                                  : "ROOT",
+                   topDownBuildMode == TopDownBuildMode::tetris ? getTetrominoTypeName (tetrisPiece.active ? tetrisPiece.type : nextTetrisType)
+                   : topDownBuildMode == TopDownBuildMode::cellularAutomata ? juce::String (((automataBuildLayer % 4) == 1) ? "Coral"
+                                                                                             : ((automataBuildLayer % 4) == 2) ? "Fredkin"
+                                                                                             : ((automataBuildLayer % 4) == 3) ? "DayNight"
+                                                                                                                           : "Life")
+                   : getNoteNameForLayer (builderLayer));
     statsTop.removeFromLeft (gap);
     drawValueCard (statsTop.removeFromLeft (twoCol), "NOTES", juce::String (isometricPlacementHeight));
 
     inner.removeFromTop (12.0f * uiScale);
     auto statsBottom = inner.removeFromTop (60.0f * uiScale);
-    drawValueCard (statsBottom.removeFromLeft (twoCol), "CURSOR", "x" + juce::String (builderCursorX) + "  y" + juce::String (builderCursorY) + "  z" + juce::String (builderLayer));
+    drawValueCard (statsBottom.removeFromLeft (twoCol), "CURSOR",
+                   topDownBuildMode == TopDownBuildMode::cellularAutomata && automataHoverCell.has_value()
+                     ? "x" + juce::String (automataHoverCell->x) + "  y" + juce::String (automataHoverCell->y) + "  z" + juce::String (automataBuildLayer)
+                     : topDownBuildMode == TopDownBuildMode::tetris
+                         ? "x" + juce::String (tetrisPiece.anchor.x) + "  y" + juce::String (tetrisPiece.anchor.y) + "  z" + juce::String (tetrisBuildLayer)
+                         : "x" + juce::String (builderCursorX) + "  y" + juce::String (builderCursorY) + "  z" + juce::String (builderLayer));
     statsBottom.removeFromLeft (gap);
     drawValueCard (statsBottom.removeFromLeft (twoCol), "ZOOM", juce::String (isometricCamera.zoom, 2));
 
@@ -3603,7 +4417,7 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     auto chordCard = inner.removeFromTop (136.0f * uiScale);
     drawCard (chordCard, 9.0f);
     auto chordInner = chordCard.reduced (12.0f * uiScale, 10.0f * uiScale);
-    drawLabel (chordInner.removeFromTop (16.0f * uiScale), "CHORD TYPE");
+    drawLabel (chordInner.removeFromTop (16.0f * uiScale), topDownBuildMode == TopDownBuildMode::cellularAutomata ? "AUTOMATA COLOURS" : "CHORD TYPE");
     chordInner.removeFromTop (10.0f * uiScale);
 
     auto drawChordChip = [&] (juce::Rectangle<float> bounds, const juce::String& text, bool active)
@@ -3647,8 +4461,14 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     drawLabel (footerInner.removeFromTop (16.0f * uiScale), "STATUS");
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (11.4f * uiScale));
-    g.drawFittedText ("Filled " + juce::String (filledCount) + "   |   Rotation " + juce::String (isometricCamera.rotation)
-                    + "   |   Mouse place/remove active",
+    g.drawFittedText ((topDownBuildMode == TopDownBuildMode::tetris
+                         ? "Filled " + juce::String (filledCount) + "   |   Next " + getTetrominoTypeName (nextTetrisType)
+                           + "   |   E climbs to next layer"
+                         : topDownBuildMode == TopDownBuildMode::cellularAutomata
+                             ? "Filled " + juce::String (filledCount) + "   |   E evolves into layer "
+                               + juce::String (juce::jmin (getSurfaceHeight() - 1, automataBuildLayer + 1))
+                             : "Filled " + juce::String (filledCount) + "   |   Rotation " + juce::String (isometricCamera.rotation)
+                               + "   |   Mouse place/remove active"),
                       footerInner.toNearestInt(),
                       juce::Justification::topLeft,
                       2);
@@ -3777,6 +4597,30 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
         g.drawEllipse (cell.reduced (tileSize * 0.12f), 1.2f);
         g.drawLine (cell.getCentreX(), cell.getY(), cell.getCentreX(), cell.getBottom(), 1.3f);
         g.drawLine (cell.getX(), cell.getCentreY(), cell.getRight(), cell.getCentreY(), 1.3f);
+    }
+
+    for (const auto& ripple : performanceRipples)
+    {
+        auto centreCell = juce::Rectangle<float> (board.getX() + ripple.centre.x * tileSize,
+                                                  board.getY() + ripple.centre.y * tileSize,
+                                                  tileSize,
+                                                  tileSize);
+        const auto centre = centreCell.getCentre();
+        const float ringRadius = tileSize * (0.4f + static_cast<float> (ripple.radius) * 0.95f);
+        const auto ringBounds = juce::Rectangle<float> (ringRadius * 2.0f, ringRadius * 2.0f).withCentre (centre);
+
+        g.setColour (ripple.colour.withAlpha (0.10f));
+        g.fillEllipse (ringBounds.expanded (tileSize * 0.16f));
+        g.setColour (ripple.colour.withAlpha (0.74f));
+        g.drawEllipse (ringBounds, 2.4f);
+        g.setColour (juce::Colours::white.withAlpha (0.28f));
+        g.drawEllipse (ringBounds.reduced (tileSize * 0.10f), 1.0f);
+
+        auto core = centreCell.reduced (tileSize * 0.34f);
+        g.setColour (ripple.colour.withAlpha (0.78f));
+        g.fillEllipse (core);
+        g.setColour (juce::Colours::white.withAlpha (0.64f));
+        g.fillEllipse (core.reduced (tileSize * 0.18f));
     }
 
     for (const auto& cellPoint : performanceAutomataCells)
@@ -4065,7 +4909,12 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
     inner.removeFromTop (10.0f);
 
     card = inner.removeFromTop (82.0f);
-    drawCard (card, "AGENTS", getPerformanceAgentModeName(), juce::String (performanceAgentCount) + " active | 0-8 count");
+    const int activeAgentVisualCount = performanceAgentMode == PerformanceAgentMode::automata
+                                         ? static_cast<int> (performanceAutomataCells.size())
+                                         : performanceAgentMode == PerformanceAgentMode::ripple
+                                             ? static_cast<int> (performanceRipples.size())
+                                             : performanceAgentCount;
+    drawCard (card, "AGENTS", getPerformanceAgentModeName(), juce::String (activeAgentVisualCount) + " active | 0-8 count");
     inner.removeFromTop (10.0f);
 
     card = inner.removeFromTop (82.0f);
@@ -4106,7 +4955,7 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (13.0f));
     const juce::String help =
-        "Enter return to build\n"
+        "P return to build\n"
         "Click place/select\n"
         "Backspace delete selected\n"
         "Arrow keys disc direction\n"
@@ -4115,7 +4964,7 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
         "U select tool\n"
         "I toggle orbit centre\n"
         "N cycle agent mode\n"
-        "M synth  B drums\n"
+              "M synth  B beat on/off\n"
         "K key  L scale\n"
         "H head/whole body\n"
         ", / . tempo\n"
@@ -4608,6 +5457,208 @@ void GameComponent::drawHotbar (juce::Graphics& g, juce::Rectangle<int> area)
     }
 }
 
+void GameComponent::drawTetrisBuildView (juce::Graphics& g, juce::Rectangle<float> area)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    const auto board = getPerformanceBoardBounds (area);
+    const float tileSize = board.getWidth() / static_cast<float> (getSurfaceWidth());
+    const float pulse = 0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.0032));
+    const int activeLayerZ = juce::jlimit (1, getSurfaceHeight() - 1, tetrisBuildLayer);
+
+    g.setColour (juce::Colour::fromRGBA (6, 11, 30, 236));
+    g.fillRoundedRectangle (board.expanded (26.0f), 28.0f);
+    g.setColour (juce::Colour::fromRGBA (74, 144, 255, 72));
+    g.drawRoundedRectangle (board.expanded (26.0f), 28.0f, 1.8f);
+
+    juce::ColourGradient boardGlow (juce::Colour::fromRGBA (42, 102, 212, 102),
+                                    board.getCentreX(), board.getCentreY(),
+                                    juce::Colour::fromRGBA (8, 13, 36, 0),
+                                    board.getCentreX(), board.getBottom() + 80.0f,
+                                    true);
+    g.setGradientFill (boardGlow);
+    g.fillEllipse (board.expanded (96.0f, 82.0f));
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+    {
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+        {
+            auto cell = juce::Rectangle<float> (board.getX() + static_cast<float> (x) * tileSize,
+                                                board.getY() + static_cast<float> (y) * tileSize,
+                                                tileSize,
+                                                tileSize);
+            g.setColour (juce::Colour::fromRGBA (8, 14, 34, 214));
+            g.fillRect (cell);
+
+            struct LayerSlice { juce::Colour colour; bool active = false; };
+            std::vector<LayerSlice> slices;
+            for (int z = 1; z < getSurfaceHeight(); ++z)
+                if (activePlanetState->getBlock (x, y, z) != 0)
+                    slices.push_back ({ getNoteColourForLayer (z), z == activeLayerZ });
+
+            if (! slices.empty())
+            {
+                auto innerCell = cell.reduced (2.0f);
+                const float sliceHeight = innerCell.getHeight() / static_cast<float> (slices.size());
+                for (size_t i = 0; i < slices.size(); ++i)
+                {
+                    auto sliceBounds = juce::Rectangle<float> (innerCell.getX(),
+                                                               innerCell.getY() + sliceHeight * static_cast<float> (i),
+                                                               innerCell.getWidth(),
+                                                               juce::jmax (1.0f, sliceHeight + 0.5f));
+                    auto colour = slices[i].colour;
+                    if (slices[i].active)
+                        colour = colour.withMultipliedBrightness (1.12f);
+                    else
+                        colour = colour.interpolatedWith (juce::Colour::greyLevel (colour.getPerceivedBrightness()), 0.88f)
+                                       .withMultipliedBrightness (0.52f)
+                                       .withMultipliedAlpha (0.55f);
+                    g.setColour (colour);
+                    g.fillRect (sliceBounds);
+                    if (slices[i].active)
+                    {
+                        g.setColour (juce::Colours::white.withAlpha (0.18f));
+                        g.drawRect (sliceBounds, 1.0f);
+                    }
+                }
+            }
+
+            g.setColour (juce::Colour::fromRGBA (88, 122, 214, 32));
+            g.drawRect (cell, 1.0f);
+        }
+    }
+
+    if (tetrisPiece.active)
+    {
+        const auto previewColour = tetrisPieceFits (tetrisPiece)
+                                     ? juce::Colour::fromRGBA (84, 238, 255, 188)
+                                     : juce::Colour::fromRGBA (255, 116, 116, 188);
+        for (const auto& placementCell : getTetrisPlacementCells (tetrisPiece))
+        {
+            if (! juce::isPositiveAndBelow (placementCell.x, getSurfaceWidth()) || ! juce::isPositiveAndBelow (placementCell.y, getSurfaceDepth()))
+                continue;
+
+            auto cell = juce::Rectangle<float> (board.getX() + static_cast<float> (placementCell.x) * tileSize,
+                                                board.getY() + static_cast<float> (placementCell.y) * tileSize,
+                                                tileSize,
+                                                tileSize).reduced (1.6f);
+            g.setColour (previewColour.withAlpha (0.22f + 0.08f * pulse));
+            g.fillRoundedRectangle (cell, 5.0f);
+            g.setColour (previewColour);
+            g.drawRoundedRectangle (cell, 5.0f, 2.0f);
+        }
+    }
+
+    auto infoTag = juce::Rectangle<float> (248.0f, 28.0f).withCentre ({ board.getCentreX(), board.getY() - 24.0f });
+    g.setColour (juce::Colour::fromRGBA (8, 14, 34, 228));
+    g.fillRoundedRectangle (infoTag, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (84, 238, 255, 160));
+    g.drawRoundedRectangle (infoTag, 8.0f, 1.5f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (13.0f));
+    g.drawFittedText ("Tetris  " + getTetrominoTypeName (tetrisPiece.active ? tetrisPiece.type : nextTetrisType)
+                      + "  layer " + juce::String (activeLayerZ),
+                      infoTag.toNearestInt(),
+                      juce::Justification::centred,
+                      1);
+}
+
+void GameComponent::drawAutomataBuildView (juce::Graphics& g, juce::Rectangle<float> area)
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    const auto board = getPerformanceBoardBounds (area);
+    const float tileSize = board.getWidth() / static_cast<float> (getSurfaceWidth());
+    const float pulse = 0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.0032));
+    const int activeLayerZ = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer);
+
+    g.setColour (juce::Colour::fromRGBA (6, 11, 30, 236));
+    g.fillRoundedRectangle (board.expanded (26.0f), 28.0f);
+    g.setColour (juce::Colour::fromRGBA (74, 144, 255, 72));
+    g.drawRoundedRectangle (board.expanded (26.0f), 28.0f, 1.8f);
+
+    juce::ColourGradient boardGlow (juce::Colour::fromRGBA (42, 102, 212, 102),
+                                    board.getCentreX(), board.getCentreY(),
+                                    juce::Colour::fromRGBA (8, 13, 36, 0),
+                                    board.getCentreX(), board.getBottom() + 80.0f,
+                                    true);
+    g.setGradientFill (boardGlow);
+    g.fillEllipse (board.expanded (96.0f, 82.0f));
+
+    for (int y = 0; y < getSurfaceDepth(); ++y)
+    {
+        for (int x = 0; x < getSurfaceWidth(); ++x)
+        {
+            auto cell = juce::Rectangle<float> (board.getX() + static_cast<float> (x) * tileSize,
+                                                board.getY() + static_cast<float> (y) * tileSize,
+                                                tileSize,
+                                                tileSize);
+            g.setColour (juce::Colour::fromRGBA (8, 14, 34, 214));
+            g.fillRect (cell);
+
+            const bool activeFilled = activePlanetState->getBlock (x, y, activeLayerZ) != 0;
+            int otherLayerCount = 0;
+            for (int z = 1; z < getSurfaceHeight(); ++z)
+                if (z != activeLayerZ && activePlanetState->getBlock (x, y, z) != 0)
+                    ++otherLayerCount;
+
+            auto innerCell = cell.reduced (2.0f);
+            if (otherLayerCount > 0)
+            {
+                const float dimInset = juce::jmin (5.0f, 1.6f + 0.4f * static_cast<float> (otherLayerCount - 1));
+                auto dimmedCell = innerCell.reduced (dimInset);
+                g.setColour (juce::Colour::fromRGBA (130, 144, 176, static_cast<uint8_t> (46 + juce::jmin (otherLayerCount, 4) * 20)));
+                g.fillRoundedRectangle (dimmedCell, 5.0f);
+                g.setColour (juce::Colour::fromRGBA (196, 208, 236, static_cast<uint8_t> (18 + juce::jmin (otherLayerCount, 4) * 10)));
+                g.drawRoundedRectangle (dimmedCell, 5.0f, 1.0f);
+            }
+
+            if (activeFilled)
+            {
+                const auto activeColour = getNoteColourForLayer (activeLayerZ).withMultipliedBrightness (1.1f);
+                g.setColour (activeColour.withAlpha (0.22f + 0.08f * pulse));
+                g.fillRoundedRectangle (innerCell.expanded (3.0f), 7.0f);
+                g.setColour (activeColour);
+                g.fillRoundedRectangle (innerCell, 5.0f);
+                g.setColour (juce::Colours::white.withAlpha (0.30f));
+                g.drawRoundedRectangle (innerCell, 5.0f, 1.2f);
+            }
+
+            if (automataHoverCell.has_value() && automataHoverCell->x == x && automataHoverCell->y == y)
+            {
+                auto hoverCell = cell.reduced (1.4f);
+                g.setColour (juce::Colour::fromRGBA (84, 238, 255, static_cast<uint8_t> (38 + 24 * pulse)));
+                g.fillRoundedRectangle (hoverCell.expanded (4.0f), 7.0f);
+                g.setColour (juce::Colour::fromRGBA (84, 238, 255, 220));
+                g.drawRoundedRectangle (hoverCell, 7.0f, 2.2f);
+            }
+
+            g.setColour (juce::Colour::fromRGBA (88, 122, 214, 32));
+            g.drawRect (cell, 1.0f);
+        }
+    }
+
+    auto infoTag = juce::Rectangle<float> (272.0f, 28.0f).withCentre ({ board.getCentreX(), board.getY() - 24.0f });
+    g.setColour (juce::Colour::fromRGBA (8, 14, 34, 228));
+    g.fillRoundedRectangle (infoTag, 8.0f);
+    g.setColour (juce::Colour::fromRGBA (84, 238, 255, 160));
+    g.drawRoundedRectangle (infoTag, 8.0f, 1.5f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (13.0f));
+    const juce::String ruleName = ((activeLayerZ % 4) == 1) ? "Coral"
+                                 : ((activeLayerZ % 4) == 2) ? "Fredkin"
+                                 : ((activeLayerZ % 4) == 3) ? "DayNight"
+                                                             : "Life";
+    g.drawFittedText (ruleName + "  layer " + juce::String (activeLayerZ),
+                      infoTag.toNearestInt(),
+                      juce::Justification::centred,
+                      1);
+}
+
 void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<int> area)
 {
     const auto target = findFirstPersonTarget();
@@ -5095,6 +6146,9 @@ void GameComponent::stepPerformanceAgents()
         case PerformanceAgentMode::automata:
             stepPerformanceAutomata();
             break;
+        case PerformanceAgentMode::ripple:
+            stepPerformanceRipples();
+            break;
     }
 }
 
@@ -5186,7 +6240,7 @@ void GameComponent::stepPerformanceSnakes()
         }
 
         snake.body.insert (snake.body.begin(), nextHead);
-        if (snake.body.size() > 7)
+        if (static_cast<int> (snake.body.size()) > getPerformanceSnakeLength())
             snake.body.pop_back();
 
         if (snakeTriggerMode == SnakeTriggerMode::headOnly)
@@ -5299,6 +6353,46 @@ void GameComponent::stepPerformanceAutomata()
         triggerPerformanceNotesAtCell (cell);
 }
 
+void GameComponent::stepPerformanceRipples()
+{
+    const auto bounds = getPerformanceRegionBounds();
+    if (performanceRipples.empty())
+    {
+        resetPerformanceAgents();
+        if (performanceRipples.empty())
+            return;
+    }
+
+    juce::Random rng;
+    for (auto& ripple : performanceRipples)
+    {
+        const int radius = ripple.radius;
+        for (int dy = -radius; dy <= radius; ++dy)
+            for (int dx = -radius; dx <= radius; ++dx)
+            {
+                const int manhattan = std::abs (dx) + std::abs (dy);
+                if (manhattan != radius)
+                    continue;
+
+                const juce::Point<int> cell { ripple.centre.x + dx, ripple.centre.y + dy };
+                if (! bounds.contains (cell))
+                    continue;
+
+                triggerPerformanceNotesAtCell (cell);
+                performanceFlashes.push_back ({ cell, ripple.colour, 0.82f, true });
+            }
+
+        ++ripple.radius;
+        if (ripple.radius > ripple.maxRadius)
+        {
+            ripple.centre = { bounds.getX() + rng.nextInt (bounds.getWidth()),
+                              bounds.getY() + rng.nextInt (bounds.getHeight()) };
+            ripple.radius = 0;
+            ripple.maxRadius = 2 + rng.nextInt (5);
+        }
+    }
+}
+
 void GameComponent::timerCallback()
 {
     for (auto it = performanceFlashes.begin(); it != performanceFlashes.end();)
@@ -5315,7 +6409,7 @@ void GameComponent::timerCallback()
 
     if (currentScene == Scene::builder && performanceMode)
     {
-        if (! performanceSnakes.empty() || ! performanceAutomataCells.empty())
+        if (! performanceSnakes.empty() || ! performanceAutomataCells.empty() || ! performanceRipples.empty())
         {
             performanceStepAccumulator += performanceBpm / 60.0 / 30.0;
             while (performanceStepAccumulator >= 0.25)
@@ -5330,7 +6424,20 @@ void GameComponent::timerCallback()
         return;
     }
 
-    if (currentScene == Scene::builder && builderViewMode == BuilderViewMode::firstPerson)
+    if (currentScene == Scene::builder && topDownBuildMode == TopDownBuildMode::tetris)
+    {
+        ++tetrisGravityTick;
+        if (tetrisGravityTick >= tetrisGravityFrames)
+        {
+            tetrisGravityTick = 0;
+            softDropTetrisPiece();
+            repaint();
+        }
+        return;
+    }
+
+    if (currentScene == Scene::builder && topDownBuildMode == TopDownBuildMode::none
+        && builderViewMode == BuilderViewMode::firstPerson)
     {
         constexpr float playerSpeed = 7.0f / 30.0f;
         constexpr float eyeHeight = 2.35f;
