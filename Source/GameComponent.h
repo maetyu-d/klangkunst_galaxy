@@ -280,6 +280,7 @@ private:
     std::vector<int> performanceRecentHitNotes;
     int performanceImprovCounter = 0;
     int performanceLastImprovMidi = -1;
+    bool performanceBeatMuted = true;
     juce::Point<float> lastMousePosition;
     bool hasMouseAnchor = false;
     bool suppressNextMouseMove = false;
@@ -355,7 +356,7 @@ private:
     int getPerformanceMidiForHeight (int z) const;
     void schedulePendingNoteOff (std::vector<PendingNoteOff>& queue, int midiNote, float lengthSeconds);
     void addPerformanceImprovResponse (const std::vector<int>& hitNotes);
-    void applyTitleBloomPerformanceDefaults();
+    void applyPerformanceEntryDefaults();
     int getAmbientRootMidi() const;
     std::vector<int> getAmbientChordMidiNotes() const;
     void addBeatEvent (juce::MidiBuffer& buffer, int midiNote, float velocity, int sampleOffset, int blockSamples);

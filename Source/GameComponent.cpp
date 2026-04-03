@@ -743,7 +743,8 @@ void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
             transportPhase -= 1.0f;
 
         synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
-        beatSynth.renderNextBlock (*bufferToFill.buffer, beatMidi, bufferToFill.startSample, bufferToFill.numSamples);
+        if (! performanceBeatMuted)
+            beatSynth.renderNextBlock (*bufferToFill.buffer, beatMidi, bufferToFill.startSample, bufferToFill.numSamples);
         return;
     }
 
@@ -1110,7 +1111,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             if (performanceMode)
             {
                 performanceEntryView = builderViewMode;
-                applyTitleBloomPerformanceDefaults();
+                applyPerformanceEntryDefaults();
                 if (performanceSnakes.empty() && performanceAutomataCells.empty())
                     resetPerformanceAgents();
             }
@@ -1134,8 +1135,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             }
             if (lowerChar == 'b')
             {
-                drumMode = static_cast<DrumMode> ((static_cast<int> (drumMode) + 1) % 5);
-                performanceDrumIndex = static_cast<int> (drumMode);
+                performanceBeatMuted = ! performanceBeatMuted;
                 repaint();
                 return true;
             }
@@ -1735,13 +1735,16 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
         else if ((beat % 4) == 0)
             focalNote = hitNotes.front();
 
-        const float velocity = juce::jlimit (0.18f, 0.52f, 0.24f + 0.025f * static_cast<float> (hitNotes.size()));
+        const float velocity = juce::jlimit (0.20f, 0.56f, 0.28f + 0.025f * static_cast<float> (hitNotes.size()));
         synth.noteOn (1, focalNote, velocity);
         schedulePendingNoteOff (pendingNoteOffs, focalNote, 1.30f);
 
-        const int haloNote = quantizePerformanceMidi (focalNote + 12);
-        synth.noteOn (1, haloNote, velocity * 0.14f);
-        schedulePendingNoteOff (pendingNoteOffs, haloNote, 1.55f);
+        if ((beat % 8) == 0)
+        {
+            const int haloNote = quantizePerformanceMidi (focalNote + 12);
+            synth.noteOn (1, haloNote, velocity * 0.10f);
+            schedulePendingNoteOff (pendingNoteOffs, haloNote, 1.55f);
+        }
         triggered = 1;
         performanceLastImprovMidi = focalNote;
     }
@@ -1796,18 +1799,18 @@ void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNot
 
     if (synthEngine == SynthEngine::titleBloom)
     {
-        const int anchor = performanceLastImprovMidi >= 0 ? performanceLastImprovMidi : responseRoot;
-        const std::array<int, 4> candidates { responseRoot, responseMid, responseTop, passing };
-        const int chosen = *std::min_element (candidates.begin(), candidates.end(),
-                                              [anchor] (int a, int b)
-                                              {
-                                                  return std::abs (a - anchor) < std::abs (b - anchor);
-                                              });
+        int chosen = responseRoot;
+        switch (beat % 8)
+        {
+            case 0: chosen = responseRoot; break;
+            case 2: chosen = responseMid; break;
+            case 4: chosen = responseTop; break;
+            case 6: chosen = passing; break;
+            default: break;
+        }
 
-        if ((beat % 4) == 0)
-            addImprovNote (chosen, 0.16f, 0.44f);
-        else if ((beat % 4) == 2)
-            addImprovNote (quantizePerformanceMidi (chosen + ((performanceImprovCounter % 2 == 0) ? 2 : -2)), 0.12f, 0.28f);
+        if ((beat % 2) == 0)
+            addImprovNote (chosen, (beat % 8) == 0 ? 0.18f : 0.13f, (beat % 8) == 0 ? 0.54f : 0.30f);
 
         return;
     }
@@ -1828,7 +1831,7 @@ void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNot
         addImprovNote (quantizePerformanceMidi (responseRoot + 12), 0.10f, 0.52f);
 }
 
-void GameComponent::applyTitleBloomPerformanceDefaults()
+void GameComponent::applyPerformanceEntryDefaults()
 {
     const juce::ScopedLock sl (synthLock);
     synth.allNotesOff (0, false);
@@ -1836,17 +1839,21 @@ void GameComponent::applyTitleBloomPerformanceDefaults()
     pendingNoteOffs.clear();
     pendingBeatNoteOffs.clear();
 
-    synthEngine = SynthEngine::titleBloom;
+    synthEngine = SynthEngine::chipPulse;
     performanceSynthIndex = static_cast<int> (synthEngine);
     scaleType = ScaleType::major;
     performanceScaleIndex = static_cast<int> (scaleType);
     performanceKeyRoot = getAmbientRootMidi() % 12;
     performanceBpm = 116.0;
+    drumMode = DrumMode::tightPulse;
+    performanceDrumIndex = static_cast<int> (drumMode);
+    performanceBeatMuted = true;
     snakeTriggerMode = SnakeTriggerMode::headOnly;
     performanceLastImprovMidi = -1;
     performanceRecentHitNotes.clear();
     performanceImprovCounter = 0;
     beatStepAccumulator = 0.0;
+    beatStepIndex = 0;
     beatBarIndex = 0;
 }
 
@@ -1886,7 +1893,8 @@ void GameComponent::resetPerformanceState()
     performanceRecentHitNotes.clear();
     performanceImprovCounter = 0;
     performanceLastImprovMidi = -1;
-    synthEngine = SynthEngine::titleBloom;
+    performanceBeatMuted = true;
+    synthEngine = SynthEngine::chipPulse;
     drumMode = DrumMode::reactiveBreakbeat;
     scaleType = ScaleType::major;
     beatStepAccumulator = 0.0;
@@ -1907,7 +1915,7 @@ void GameComponent::applyPerformancePresetForPlanet()
 
     performanceAgentMode = static_cast<PerformanceAgentMode> (modeDist (rng));
     performanceBpm = static_cast<double> (tempoDist (rng));
-    synthEngine = SynthEngine::titleBloom;
+    synthEngine = SynthEngine::chipPulse;
     drumMode = static_cast<DrumMode> (drumDist (rng));
     scaleType = static_cast<ScaleType> (scaleDist (rng));
     performanceSynthIndex = static_cast<int> (synthEngine);
@@ -1917,6 +1925,7 @@ void GameComponent::applyPerformancePresetForPlanet()
     performanceRecentHitNotes.clear();
     performanceImprovCounter = 0;
     performanceLastImprovMidi = -1;
+    performanceBeatMuted = true;
     snakeTriggerMode = triggerDist (rng) == 0 ? SnakeTriggerMode::headOnly : SnakeTriggerMode::wholeBody;
     beatStepAccumulator = 0.0;
     beatStepIndex = 0;
@@ -2061,6 +2070,9 @@ juce::String GameComponent::getPerformanceSynthName() const
 
 juce::String GameComponent::getPerformanceDrumName() const
 {
+    if (performanceBeatMuted)
+        return "Beat Off";
+
     switch (drumMode)
     {
         case DrumMode::reactiveBreakbeat: return "Reactive Breakbeat";
