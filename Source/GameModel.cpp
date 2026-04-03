@@ -88,6 +88,7 @@ juce::String performanceModeToString (PlanetPerformanceMode mode)
         case PlanetPerformanceMode::trains: return "trains";
         case PlanetPerformanceMode::ripple: return "ripple";
         case PlanetPerformanceMode::sequencer: return "beam";
+        case PlanetPerformanceMode::tenori: return "tenori";
     }
 
     return "snakes";
@@ -101,6 +102,8 @@ PlanetPerformanceMode performanceModeFromString (const juce::String& text)
         return PlanetPerformanceMode::ripple;
     if (text == "beam" || text == "sequencer")
         return PlanetPerformanceMode::sequencer;
+    if (text == "tenori")
+        return PlanetPerformanceMode::tenori;
     return PlanetPerformanceMode::snakes;
 }
 
@@ -479,7 +482,7 @@ GalaxyMetadata GalaxyGenerator::generateGalaxy (int seed)
             planet->water = systemRandom.nextFloat();
             planet->atmosphere = systemRandom.nextFloat();
             planet->assignedBuildMode = static_cast<PlanetBuildMode> (systemRandom.nextInt (4));
-            planet->assignedPerformanceMode = static_cast<PlanetPerformanceMode> (systemRandom.nextInt (4));
+            planet->assignedPerformanceMode = static_cast<PlanetPerformanceMode> (systemRandom.nextInt (5));
             planet->accent = colourFromSeed (planet->seed, 0.55f + 0.25f * planet->water, 0.65f + 0.15f * planet->energy);
         }
     }

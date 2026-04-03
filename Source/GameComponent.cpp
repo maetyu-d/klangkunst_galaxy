@@ -1288,7 +1288,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             }
             if (lowerChar == 'n')
             {
-                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 6);
+                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 7);
                 resetPerformanceAgents();
                 repaint();
                 return true;
@@ -2141,6 +2141,7 @@ void GameComponent::resetPerformanceState()
     performancePlacementMode = PerformancePlacementMode::selectOnly;
     performanceSelection = {};
     performanceTick = 0;
+    performanceTenoriColumn = 0;
     performanceBeatEnergy = 0.0f;
     performanceBpm = 116.0;
     performanceStepAccumulator = 0.0;
@@ -2181,6 +2182,7 @@ void GameComponent::applyPerformancePresetForPlanet()
         case PlanetPerformanceMode::trains: performanceAgentMode = PerformanceAgentMode::trains; break;
         case PlanetPerformanceMode::ripple: performanceAgentMode = PerformanceAgentMode::ripple; break;
         case PlanetPerformanceMode::sequencer: performanceAgentMode = PerformanceAgentMode::sequencer; break;
+        case PlanetPerformanceMode::tenori: performanceAgentMode = PerformanceAgentMode::tenori; break;
     }
     performanceBpm = static_cast<double> (tempoDist (rng));
     synthEngine = SynthEngine::chipPulse;
@@ -2286,6 +2288,12 @@ void GameComponent::resetPerformanceAgents()
         return;
     }
 
+    if (performanceAgentMode == PerformanceAgentMode::tenori)
+    {
+        performanceTenoriColumn = bounds.getX();
+        return;
+    }
+
     if (performanceAgentMode == PerformanceAgentMode::orbiters && performanceOrbitCenters.empty())
         performanceOrbitCenters.push_back (bounds.getCentre());
 
@@ -2352,6 +2360,7 @@ juce::String GameComponent::getPerformanceAgentModeName() const
         case PerformanceAgentMode::automata: return "Automata";
         case PerformanceAgentMode::ripple: return "Ripple";
         case PerformanceAgentMode::sequencer: return "Beam";
+        case PerformanceAgentMode::tenori: return "Tenori";
     }
 
     return "Snakes";
@@ -2681,6 +2690,7 @@ juce::String GameComponent::getPlanetPerformanceModeName (PlanetPerformanceMode 
         case PlanetPerformanceMode::trains: return "Trains";
         case PlanetPerformanceMode::ripple: return "Ripple";
         case PlanetPerformanceMode::sequencer: return "Beam";
+        case PlanetPerformanceMode::tenori: return "Tenori";
     }
 
     return "Snakes";
@@ -5011,6 +5021,21 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
     g.setColour (juce::Colour::fromRGBA (144, 240, 255, 182));
     g.drawRoundedRectangle (regionLocal.expanded (2.5f), 12.0f, 2.2f);
 
+    if (performanceAgentMode == PerformanceAgentMode::tenori)
+    {
+        const int column = juce::jlimit (activeRegion.getX(), activeRegion.getRight() - 1, performanceTenoriColumn);
+        auto playhead = juce::Rectangle<float> (board.getX() + static_cast<float> (column) * tileSize,
+                                                board.getY() + static_cast<float> (activeRegion.getY()) * tileSize,
+                                                tileSize,
+                                                static_cast<float> (activeRegion.getHeight()) * tileSize);
+        g.setColour (juce::Colour::fromRGBA (108, 232, 255, 42));
+        g.fillRoundedRectangle (playhead.expanded (tileSize * 0.12f, tileSize * 0.08f), 8.0f);
+        g.setColour (juce::Colour::fromRGBA (148, 244, 255, 218));
+        g.fillRoundedRectangle (playhead.reduced (tileSize * 0.18f, 0.0f), 6.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.34f));
+        g.drawRoundedRectangle (playhead.reduced (tileSize * 0.18f, 0.0f), 6.0f, 1.4f);
+    }
+
     for (const auto& track : performanceTracks)
     {
         if (! activeRegion.contains (track.cell))
@@ -5429,6 +5454,8 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
                                              ? static_cast<int> (performanceRipples.size())
                                              : performanceAgentMode == PerformanceAgentMode::sequencer
                                                  ? static_cast<int> (performanceSequencers.size())
+                                             : performanceAgentMode == PerformanceAgentMode::tenori
+                                                 ? 1
                                              : performanceAgentCount;
     drawCard (card, "AGENTS", getPerformanceAgentModeName(), juce::String (activeAgentVisualCount) + " active | 0-8 count");
     inner.removeFromTop (10.0f);
@@ -6669,6 +6696,9 @@ void GameComponent::stepPerformanceAgents()
         case PerformanceAgentMode::sequencer:
             stepPerformanceSequencers();
             break;
+        case PerformanceAgentMode::tenori:
+            stepPerformanceTenori();
+            break;
     }
 }
 
@@ -6992,6 +7022,27 @@ void GameComponent::stepPerformanceSequencers()
     }
 }
 
+void GameComponent::stepPerformanceTenori()
+{
+    const auto bounds = getPerformanceRegionBounds();
+    if (bounds.isEmpty())
+        return;
+
+    performanceTenoriColumn = juce::jlimit (bounds.getX(), bounds.getRight() - 1, performanceTenoriColumn);
+
+    for (int y = bounds.getY(); y < bounds.getBottom(); ++y)
+    {
+        const juce::Point<int> cell { performanceTenoriColumn, y };
+        recordPerformanceMovementCell (cell);
+        triggerPerformanceNotesAtCell (cell);
+        performanceFlashes.push_back ({ cell, juce::Colour::fromRGBA (130, 238, 255, 220), 0.64f, true });
+    }
+
+    ++performanceTenoriColumn;
+    if (performanceTenoriColumn >= bounds.getRight())
+        performanceTenoriColumn = bounds.getX();
+}
+
 void GameComponent::timerCallback()
 {
     for (auto it = performanceFlashes.begin(); it != performanceFlashes.end();)
@@ -7010,7 +7061,8 @@ void GameComponent::timerCallback()
     {
         performanceSessionSeconds += 1.0 / 30.0;
         if (! performanceSnakes.empty() || ! performanceAutomataCells.empty()
-            || ! performanceRipples.empty() || ! performanceSequencers.empty())
+            || ! performanceRipples.empty() || ! performanceSequencers.empty()
+            || performanceAgentMode == PerformanceAgentMode::tenori)
         {
             performanceStepAccumulator += performanceBpm / 60.0 / 30.0;
             while (performanceStepAccumulator >= 0.25)

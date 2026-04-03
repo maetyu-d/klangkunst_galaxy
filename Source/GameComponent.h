@@ -62,7 +62,8 @@ private:
         orbiters,
         automata,
         ripple,
-        sequencer
+        sequencer,
+        tenori
     };
 
     enum class PerformancePlacementMode
@@ -338,6 +339,7 @@ private:
     PerformancePlacementMode performancePlacementMode = PerformancePlacementMode::selectOnly;
     PerformanceSelection performanceSelection;
     int performanceTick = 0;
+    int performanceTenoriColumn = 0;
     float performanceBeatEnergy = 0.0f;
     double performanceBpm = 168.0;
     double performanceStepAccumulator = 0.0;
@@ -418,6 +420,7 @@ private:
     void stepPerformanceAutomata();
     void stepPerformanceRipples();
     void stepPerformanceSequencers();
+    void stepPerformanceTenori();
     bool hasPerformanceTrackAt (juce::Point<int> cell) const noexcept;
     bool getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept;
     void drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area);

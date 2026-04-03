@@ -16,7 +16,8 @@ enum class PlanetPerformanceMode
     snakes,
     trains,
     ripple,
-    sequencer
+    sequencer,
+    tenori
 };
 
 struct PlanetMetadata
