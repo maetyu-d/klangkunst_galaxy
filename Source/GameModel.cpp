@@ -103,6 +103,27 @@ PlanetPerformanceMode performanceModeFromString (const juce::String& text)
         return PlanetPerformanceMode::sequencer;
     return PlanetPerformanceMode::snakes;
 }
+
+juce::var serialiseIntVector (const std::vector<int>& values)
+{
+    juce::Array<juce::var> array;
+    array.ensureStorageAllocated (static_cast<int> (values.size()));
+    for (const auto value : values)
+        array.add (value);
+    return juce::var (array);
+}
+
+std::vector<int> deserialiseIntVector (const juce::var& value)
+{
+    std::vector<int> result;
+    if (const auto* array = value.getArray(); array != nullptr)
+    {
+        result.reserve (static_cast<size_t> (array->size()));
+        for (const auto& item : *array)
+            result.push_back (static_cast<int> (item));
+    }
+    return result;
+}
 }
 
 int PlanetSurfaceState::getIndex (int x, int y, int z) const noexcept
@@ -228,6 +249,58 @@ void PersistenceManager::recordPlanetVisit (const StarSystemMetadata& system, co
     saveFile.replaceWithText (juce::JSON::toString (rootData, true));
 }
 
+void PersistenceManager::recordPerformanceSnapshot (const StarSystemMetadata& system, const PlanetMetadata& planet,
+                                                    int width, int depth, double seconds,
+                                                    const std::vector<int>& movementHeat,
+                                                    const std::vector<int>& triggerHeat,
+                                                    const std::vector<int>& noteHeat)
+{
+    ensureLoaded();
+
+    auto* visitLog = getVisitLogArray();
+    if (visitLog == nullptr)
+        return;
+
+    const auto nowIso = juce::Time::getCurrentTime().toISO8601 (true);
+
+    for (auto& entryVar : *visitLog)
+    {
+        if (auto* entry = entryVar.getDynamicObject(); entry != nullptr)
+        {
+            if (entry->getProperty ("planetId").toString() != planet.id)
+                continue;
+
+            entry->setProperty ("planetName", planet.name);
+            entry->setProperty ("systemId", system.id);
+            entry->setProperty ("systemName", system.name);
+            entry->setProperty ("lastVisitedUtc", nowIso);
+            entry->setProperty ("performanceWidth", width);
+            entry->setProperty ("performanceDepth", depth);
+            entry->setProperty ("performanceSeconds", static_cast<double> (entry->getProperty ("performanceSeconds")) + seconds);
+            entry->setProperty ("performanceSessions", static_cast<int> (entry->getProperty ("performanceSessions")) + 1);
+
+            auto mergeVectorProperty = [&] (const juce::Identifier& name, const std::vector<int>& incoming)
+            {
+                auto existing = deserialiseIntVector (entry->getProperty (name));
+                if (existing.size() < incoming.size())
+                    existing.resize (incoming.size(), 0);
+
+                for (size_t i = 0; i < incoming.size(); ++i)
+                    existing[i] += incoming[i];
+
+                entry->setProperty (name, serialiseIntVector (existing));
+            };
+
+            mergeVectorProperty ("performanceMovementHeat", movementHeat);
+            mergeVectorProperty ("performanceTriggerHeat", triggerHeat);
+            mergeVectorProperty ("performanceNoteHeat", noteHeat);
+
+            saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+            return;
+        }
+    }
+}
+
 std::vector<VisitLogEntry> PersistenceManager::getVisitLog()
 {
     ensureLoaded();
@@ -258,6 +331,13 @@ std::vector<VisitLogEntry> PersistenceManager::getVisitLog()
                 entry.firstVisitedUtc = object->getProperty ("firstVisitedUtc").toString();
                 entry.lastVisitedUtc = object->getProperty ("lastVisitedUtc").toString();
                 entry.visitCount = static_cast<int> (object->getProperty ("visitCount"));
+                entry.performanceWidth = static_cast<int> (object->getProperty ("performanceWidth"));
+                entry.performanceDepth = static_cast<int> (object->getProperty ("performanceDepth"));
+                entry.performanceSeconds = static_cast<double> (object->getProperty ("performanceSeconds"));
+                entry.performanceSessions = static_cast<int> (object->getProperty ("performanceSessions"));
+                entry.performanceMovementHeat = deserialiseIntVector (object->getProperty ("performanceMovementHeat"));
+                entry.performanceTriggerHeat = deserialiseIntVector (object->getProperty ("performanceTriggerHeat"));
+                entry.performanceNoteHeat = deserialiseIntVector (object->getProperty ("performanceNoteHeat"));
                 entries.push_back (std::move (entry));
             }
         }
@@ -372,7 +452,7 @@ GalaxyMetadata GalaxyGenerator::generateGalaxy (int seed)
     galaxy.seed = seed;
     galaxy.name = makeName (random, 2, 3) + " Galaxy";
 
-    const auto systemCount = 18;
+    const auto systemCount = 30;
     for (int systemIndex = 0; systemIndex < systemCount; ++systemIndex)
     {
         auto* system = galaxy.systems.add (new StarSystemMetadata());
@@ -381,8 +461,8 @@ GalaxyMetadata GalaxyGenerator::generateGalaxy (int seed)
         system->name = makeName (random, 2, 3);
 
         const auto angle = juce::MathConstants<float>::twoPi * (static_cast<float> (systemIndex) / static_cast<float> (systemCount));
-        const auto radius = 0.18f + random.nextFloat() * 0.72f;
-        system->galaxyPosition = { 0.5f + std::cos (angle) * radius * 0.45f, 0.5f + std::sin (angle) * radius * 0.35f };
+        const auto radius = 0.10f + random.nextFloat() * 0.90f;
+        system->galaxyPosition = { 0.5f + std::cos (angle) * radius * 0.48f, 0.5f + std::sin (angle) * radius * 0.40f };
 
         juce::Random systemRandom (system->seed);
         const auto planetCount = systemRandom.nextInt ({ 3, 8 });

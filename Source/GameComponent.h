@@ -202,6 +202,12 @@ private:
         bool pulse = false;
     };
 
+    struct LogHeatmapHitTarget
+    {
+        juce::String planetId;
+        juce::Rectangle<float> bounds;
+    };
+
     struct PerformanceSelection
     {
         enum class Kind
@@ -287,6 +293,9 @@ private:
     PersistenceManager persistence;
     Scene currentScene = Scene::title;
     bool galaxyLogOpen = false;
+    float galaxyLogScroll = 0.0f;
+    juce::String expandedLogHeatmapPlanetId;
+    std::vector<LogHeatmapHitTarget> logHeatmapHitTargets;
     int selectedSystemIndex = 0;
     int selectedPlanetIndex = 0;
     TitleAction hoveredTitleAction = TitleAction::none;
@@ -341,6 +350,10 @@ private:
     int performanceImprovCounter = 0;
     int performanceLastImprovMidi = -1;
     bool performanceBeatMuted = true;
+    double performanceSessionSeconds = 0.0;
+    std::vector<int> performanceMovementHeat;
+    std::vector<int> performanceTriggerHeat;
+    std::vector<int> performanceNoteHeat;
     juce::Point<float> lastMousePosition;
     bool hasMouseAnchor = false;
     bool suppressNextMouseMove = false;
@@ -393,6 +406,9 @@ private:
     juce::Rectangle<int> getPerformanceRegionBounds() const noexcept;
     std::optional<juce::Point<int>> getPerformanceCellAtPosition (juce::Point<float> position, juce::Rectangle<float> area) const;
     void triggerPerformanceNotesAtCell (juce::Point<int> cell);
+    void beginPerformanceLogSession();
+    void flushPerformanceLogSession();
+    void recordPerformanceMovementCell (juce::Point<int> cell, int amount = 1);
     void resetPerformanceState();
     void resetPerformanceAgents();
     void setPerformanceAgentCount (int count);
@@ -471,6 +487,7 @@ private:
     void drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> area);
+    float getGalaxyLogMaxScroll (juce::Rectangle<int> area);
     void drawLandingScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawHotbar (juce::Graphics& g, juce::Rectangle<int> area);

@@ -69,6 +69,13 @@ struct VisitLogEntry
     juce::String firstVisitedUtc;
     juce::String lastVisitedUtc;
     int visitCount = 0;
+    int performanceWidth = 0;
+    int performanceDepth = 0;
+    double performanceSeconds = 0.0;
+    int performanceSessions = 0;
+    std::vector<int> performanceMovementHeat;
+    std::vector<int> performanceTriggerHeat;
+    std::vector<int> performanceNoteHeat;
 };
 
 struct PlanetSurfaceState
@@ -99,6 +106,11 @@ public:
     std::unique_ptr<PlanetSurfaceState> loadPlanet (const juce::String& planetId);
     void savePlanet (const PlanetSurfaceState& state);
     void recordPlanetVisit (const StarSystemMetadata& system, const PlanetMetadata& planet);
+    void recordPerformanceSnapshot (const StarSystemMetadata& system, const PlanetMetadata& planet,
+                                    int width, int depth, double seconds,
+                                    const std::vector<int>& movementHeat,
+                                    const std::vector<int>& triggerHeat,
+                                    const std::vector<int>& noteHeat);
     std::vector<VisitLogEntry> getVisitLog();
 
 private:

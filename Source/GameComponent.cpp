@@ -939,6 +939,15 @@ void GameComponent::mouseDrag (const juce::MouseEvent& event)
 
 void GameComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
 {
+    if (currentScene == Scene::galaxy && galaxyLogOpen)
+    {
+        const float delta = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
+        const float scrollAmount = delta * (wheel.isSmooth ? 96.0f : 148.0f);
+        galaxyLogScroll = juce::jlimit (0.0f, getGalaxyLogMaxScroll (getLocalBounds()), galaxyLogScroll - scrollAmount);
+        repaint();
+        return;
+    }
+
     if (currentScene != Scene::builder)
         return;
 
@@ -957,6 +966,9 @@ void GameComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWh
 
 void GameComponent::mouseDown (const juce::MouseEvent& event)
 {
+    if (! hasKeyboardFocus (true))
+        grabKeyboardFocus();
+
     if (currentScene == Scene::builder && performanceMode)
         return;
 
@@ -988,6 +1000,26 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
             case TitleAction::none: break;
         }
         return;
+    }
+
+    if (currentScene == Scene::galaxy && galaxyLogOpen)
+    {
+        if (! expandedLogHeatmapPlanetId.isEmpty())
+        {
+            expandedLogHeatmapPlanetId.clear();
+            repaint();
+            return;
+        }
+
+        for (const auto& hit : logHeatmapHitTargets)
+        {
+            if (hit.bounds.contains (event.position))
+            {
+                expandedLogHeatmapPlanetId = hit.planetId;
+                repaint();
+                return;
+            }
+        }
     }
 
     if (currentScene == Scene::builder)
@@ -1138,6 +1170,8 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
         if (lowerChar == 'l')
         {
             galaxyLogOpen = ! galaxyLogOpen;
+            if (galaxyLogOpen)
+                galaxyLogScroll = 0.0f;
             repaint();
             return true;
         }
@@ -1182,6 +1216,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
         if (key == juce::KeyPress::escapeKey)
         {
             performanceMode = false;
+            flushPerformanceLogSession();
             saveActivePlanet();
             setScene (Scene::landing);
             return true;
@@ -1195,12 +1230,14 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
                 performanceEntryView = builderViewMode;
                 performanceEntryTopDownMode = topDownBuildMode;
                 applyPerformanceEntryDefaults();
+                beginPerformanceLogSession();
                 if (performanceSnakes.empty() && performanceAutomataCells.empty()
                     && performanceRipples.empty() && performanceSequencers.empty())
                     resetPerformanceAgents();
             }
             else
             {
+                flushPerformanceLogSession();
                 builderViewMode = performanceEntryView;
                 topDownBuildMode = performanceEntryTopDownMode;
             }
@@ -1536,6 +1573,7 @@ void GameComponent::enterBuilder()
 void GameComponent::leavePlanet()
 {
     performanceMode = false;
+    flushPerformanceLogSession();
     resetPerformanceState();
     saveActivePlanet();
     activePlanetState.reset();
@@ -1562,6 +1600,45 @@ void GameComponent::saveActivePlanet()
 {
     if (activePlanetState != nullptr)
         persistence.savePlanet (*activePlanetState);
+}
+
+void GameComponent::beginPerformanceLogSession()
+{
+    performanceSessionSeconds = 0.0;
+    performanceMovementHeat.assign (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), 0);
+    performanceTriggerHeat.assign (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), 0);
+    performanceNoteHeat.assign (static_cast<size_t> (getSurfaceHeight()), 0);
+}
+
+void GameComponent::flushPerformanceLogSession()
+{
+    const bool hasActivity = std::any_of (performanceMovementHeat.begin(), performanceMovementHeat.end(), [] (int v) { return v > 0; })
+                          || std::any_of (performanceTriggerHeat.begin(), performanceTriggerHeat.end(), [] (int v) { return v > 0; })
+                          || std::any_of (performanceNoteHeat.begin(), performanceNoteHeat.end(), [] (int v) { return v > 0; });
+
+    if (performanceSessionSeconds > 0.0 && hasActivity)
+    {
+        persistence.recordPerformanceSnapshot (getSelectedSystem(), getSelectedPlanet(),
+                                              getSurfaceWidth(), getSurfaceDepth(), performanceSessionSeconds,
+                                              performanceMovementHeat, performanceTriggerHeat, performanceNoteHeat);
+    }
+
+    performanceSessionSeconds = 0.0;
+    performanceMovementHeat.clear();
+    performanceTriggerHeat.clear();
+    performanceNoteHeat.clear();
+}
+
+void GameComponent::recordPerformanceMovementCell (juce::Point<int> cell, int amount)
+{
+    if (! juce::isPositiveAndBelow (cell.x, getSurfaceWidth())
+        || ! juce::isPositiveAndBelow (cell.y, getSurfaceDepth()))
+        return;
+
+    const auto index = static_cast<size_t> (cell.y * getSurfaceWidth() + cell.x);
+    if (performanceMovementHeat.size() != static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()))
+        performanceMovementHeat.assign (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), 0);
+    performanceMovementHeat[index] += amount;
 }
 
 void GameComponent::updateMusicState()
@@ -1865,6 +1942,11 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
         || ! juce::isPositiveAndBelow (cell.y, getSurfaceDepth()))
         return;
 
+    if (performanceTriggerHeat.size() != static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()))
+        performanceTriggerHeat.assign (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), 0);
+    if (performanceNoteHeat.size() != static_cast<size_t> (getSurfaceHeight()))
+        performanceNoteHeat.assign (static_cast<size_t> (getSurfaceHeight()), 0);
+
     const juce::ScopedLock sl (synthLock);
     const bool titleBloomActive = synthEngine == SynthEngine::titleBloom;
     std::vector<int> hitNotes;
@@ -1875,10 +1957,13 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
 
         const int midiNote = getPerformanceMidiForHeight (z);
         hitNotes.push_back (midiNote);
+        ++performanceNoteHeat[static_cast<size_t> (z)];
     }
 
     if (hitNotes.empty())
         return;
+
+    ++performanceTriggerHeat[static_cast<size_t> (cell.y * getSurfaceWidth() + cell.x)];
 
     std::sort (hitNotes.begin(), hitNotes.end());
     hitNotes.erase (std::unique (hitNotes.begin(), hitNotes.end()), hitNotes.end());
@@ -2068,6 +2153,10 @@ void GameComponent::resetPerformanceState()
     performanceImprovCounter = 0;
     performanceLastImprovMidi = -1;
     performanceBeatMuted = true;
+    performanceSessionSeconds = 0.0;
+    performanceMovementHeat.clear();
+    performanceTriggerHeat.clear();
+    performanceNoteHeat.clear();
     synthEngine = SynthEngine::chipPulse;
     drumMode = DrumMode::reactiveBreakbeat;
     scaleType = ScaleType::major;
@@ -3241,7 +3330,11 @@ void GameComponent::updateFirstPersonMouseCapture()
     suppressNextMouseMove = shouldCapture;
 
     if (shouldCapture)
+    {
+        if (! hasKeyboardFocus (true))
+            grabKeyboardFocus();
         recenterFirstPersonMouse();
+    }
 }
 
 void GameComponent::recenterFirstPersonMouse()
@@ -3295,8 +3388,8 @@ GameComponent::TitleAction GameComponent::titleActionAt (juce::Point<float> posi
 {
     const std::array<TitleAction, 4> actions {
         TitleAction::resumeVoyage,
-        TitleAction::loadVoyage,
         TitleAction::newVoyage,
+        TitleAction::loadVoyage,
         TitleAction::saveVoyage
     };
 
@@ -3676,14 +3769,14 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     const float buttonWidth = (actionsRow.getWidth() - buttonGap * 3.0f) / 4.0f;
     const std::array<TitleAction, 4> actions {
         TitleAction::resumeVoyage,
-        TitleAction::loadVoyage,
         TitleAction::newVoyage,
+        TitleAction::loadVoyage,
         TitleAction::saveVoyage
     };
     const std::array<juce::String, 4> captions {
         "Return to the current voyage and continue charting the galaxy.",
-        "Load the current seeded galaxy and begin navigating star systems.",
         "Generate a fresh seeded cosmos and begin a new voyage.",
+        "Load the current seeded galaxy and begin navigating star systems.",
         "Save the current galaxy and any planetary changes."
     };
     for (size_t i = 0; i < actions.size(); ++i)
@@ -4129,6 +4222,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
 
 void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> area)
 {
+    logHeatmapHitTargets.clear();
     auto bounds = area.reduced (14);
     auto page = bounds.toFloat();
 
@@ -4153,10 +4247,6 @@ void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> a
         g.drawLine (paper.getX() + 34.0f, y, paper.getRight() - 28.0f, y, 0.8f);
     }
 
-    const float spineX = paper.getX() + 58.0f;
-    g.setColour (juce::Colour::fromRGBA (156, 60, 44, 110));
-    g.drawLine (spineX, paper.getY() + 20.0f, spineX, paper.getBottom() - 20.0f, 2.0f);
-
     auto header = paper.reduced (28.0f);
     auto titleArea = header.removeFromTop (54.0f);
     g.setColour (juce::Colour::fromRGB (73, 39, 26));
@@ -4169,6 +4259,7 @@ void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> a
 
     auto entries = persistence.getVisitLog();
     auto listArea = header.reduced (0.0f, 10.0f);
+    galaxyLogScroll = juce::jlimit (0.0f, getGalaxyLogMaxScroll (area), galaxyLogScroll);
 
     if (entries.empty())
     {
@@ -4179,20 +4270,29 @@ void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> a
         return;
     }
 
-    const int maxEntries = juce::jmax (1, static_cast<int> ((listArea.getHeight() - 20.0f) / 92.0f));
-    int shown = 0;
+    g.saveState();
+    g.reduceClipRegion (listArea.toNearestInt());
+    auto cursorArea = listArea.withY (listArea.getY() - galaxyLogScroll);
+    const float rowHeight = 96.0f;
+    const float rowGap = 8.0f;
+
     for (const auto& entry : entries)
     {
-        if (shown >= maxEntries)
+        auto row = cursorArea.removeFromTop (rowHeight);
+        cursorArea.removeFromTop (rowGap);
+        if (row.getBottom() < listArea.getY())
+            continue;
+        if (row.getY() > listArea.getBottom())
             break;
 
-        auto row = listArea.removeFromTop (84.0f);
         g.setColour (juce::Colour::fromRGBA (104, 73, 54, 28));
         g.fillRoundedRectangle (row, 8.0f);
         g.setColour (juce::Colour::fromRGBA (92, 62, 44, 90));
         g.drawRoundedRectangle (row, 8.0f, 1.0f);
 
         auto ink = row.reduced (16.0f, 10.0f);
+        auto preview = ink.removeFromRight (94.0f);
+        preview.removeFromLeft (8.0f);
         auto dot = ink.removeFromLeft (18.0f).withSizeKeepingCentre (12.0f, 12.0f);
         g.setColour (entry.accent);
         g.fillEllipse (dot);
@@ -4221,12 +4321,177 @@ void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> a
 
         auto stamp = ink.removeFromTop (16.0f);
         g.setColour (juce::Colour::fromRGBA (112, 40, 34, 210));
-        g.drawFittedText ("last logged " + entry.lastVisitedUtc.replaceCharacter ('T', ' '),
+        g.drawFittedText ("last logged " + entry.lastVisitedUtc.replaceCharacter ('T', ' ')
+                          + (entry.performanceSessions > 0
+                                ? "   perf " + juce::String (entry.performanceSessions) + " runs / "
+                                  + juce::String (entry.performanceSeconds, 1) + "s"
+                                : juce::String()),
                           stamp.toNearestInt(), juce::Justification::centredLeft, 1);
 
-        listArea.removeFromTop (8.0f);
-        ++shown;
+        if (entry.performanceWidth > 0 && entry.performanceDepth > 0)
+        {
+            auto heatmap = preview.removeFromTop (72.0f);
+            auto noteStrip = preview.removeFromBottom (10.0f);
+            logHeatmapHitTargets.push_back ({ entry.planetId, heatmap.expanded (4.0f) });
+
+            g.setColour (juce::Colour::fromRGBA (74, 52, 38, 48));
+            g.fillRoundedRectangle (heatmap, 5.0f);
+            g.setColour (juce::Colour::fromRGBA (92, 62, 44, 110));
+            g.drawRoundedRectangle (heatmap, 5.0f, 1.0f);
+
+            const int width = juce::jlimit (1, PlanetSurfaceState::maxWidth, entry.performanceWidth);
+            const int depth = juce::jlimit (1, PlanetSurfaceState::maxDepth, entry.performanceDepth);
+            const float cellW = heatmap.getWidth() / static_cast<float> (width);
+            const float cellH = heatmap.getHeight() / static_cast<float> (depth);
+            const int maxMovement = entry.performanceMovementHeat.empty() ? 0 : *std::max_element (entry.performanceMovementHeat.begin(), entry.performanceMovementHeat.end());
+            const int maxTrigger = entry.performanceTriggerHeat.empty() ? 0 : *std::max_element (entry.performanceTriggerHeat.begin(), entry.performanceTriggerHeat.end());
+
+            for (int y = 0; y < depth; ++y)
+            {
+                for (int x = 0; x < width; ++x)
+                {
+                    const size_t index = static_cast<size_t> (y * width + x);
+                    const int movement = index < entry.performanceMovementHeat.size() ? entry.performanceMovementHeat[index] : 0;
+                    const int trigger = index < entry.performanceTriggerHeat.size() ? entry.performanceTriggerHeat[index] : 0;
+                    const float movementAlpha = maxMovement > 0 ? static_cast<float> (movement) / static_cast<float> (maxMovement) : 0.0f;
+                    const float triggerAlpha = maxTrigger > 0 ? static_cast<float> (trigger) / static_cast<float> (maxTrigger) : 0.0f;
+
+                    auto cell = juce::Rectangle<float> (heatmap.getX() + x * cellW,
+                                                        heatmap.getY() + y * cellH,
+                                                        cellW,
+                                                        cellH).reduced (0.5f);
+                    g.setColour (juce::Colour::fromFloatRGBA (0.20f, 0.42f, 0.86f, 0.10f + movementAlpha * 0.55f));
+                    g.fillRect (cell);
+                    if (triggerAlpha > 0.0f)
+                    {
+                        g.setColour (juce::Colour::fromFloatRGBA (1.0f, 0.50f, 0.16f, 0.10f + triggerAlpha * 0.72f));
+                        g.fillRect (cell.reduced (cellW * 0.12f, cellH * 0.12f));
+                    }
+                }
+            }
+
+            if (! entry.performanceNoteHeat.empty())
+            {
+                const int maxNote = *std::max_element (entry.performanceNoteHeat.begin(), entry.performanceNoteHeat.end());
+                const float barW = noteStrip.getWidth() / static_cast<float> (entry.performanceNoteHeat.size());
+                for (size_t i = 0; i < entry.performanceNoteHeat.size(); ++i)
+                {
+                    const float alpha = maxNote > 0 ? static_cast<float> (entry.performanceNoteHeat[i]) / static_cast<float> (maxNote) : 0.0f;
+                    auto bar = juce::Rectangle<float> (noteStrip.getX() + static_cast<float> (i) * barW,
+                                                       noteStrip.getY(),
+                                                       juce::jmax (1.0f, barW - 0.5f),
+                                                       noteStrip.getHeight());
+                    const auto colour = getNoteColourForLayer (static_cast<int> (i));
+                    g.setColour (colour.withAlpha (0.10f + alpha * 0.82f));
+                    g.fillRect (bar);
+                }
+            }
+        }
     }
+    g.restoreState();
+
+    if (! expandedLogHeatmapPlanetId.isEmpty())
+    {
+        const auto it = std::find_if (entries.begin(), entries.end(),
+                                      [this] (const VisitLogEntry& entry) { return entry.planetId == expandedLogHeatmapPlanetId; });
+        if (it != entries.end() && it->performanceWidth > 0 && it->performanceDepth > 0)
+        {
+            auto overlay = page.reduced (90.0f, 70.0f);
+            g.setColour (juce::Colour::fromRGBA (16, 10, 8, 160));
+            g.fillRoundedRectangle (page, 18.0f);
+            g.setColour (juce::Colour::fromRGBA (240, 228, 206, 245));
+            g.fillRoundedRectangle (overlay, 16.0f);
+            g.setColour (juce::Colour::fromRGBA (82, 46, 28, 180));
+            g.drawRoundedRectangle (overlay, 16.0f, 1.8f);
+
+            auto content = overlay.reduced (22.0f);
+            auto title = content.removeFromTop (28.0f);
+            g.setColour (juce::Colour::fromRGB (70, 38, 26));
+            g.setFont (juce::FontOptions (22.0f));
+            g.drawText (it->planetName + " performance memory", title.toNearestInt(), juce::Justification::centredLeft);
+
+            auto subtitle = content.removeFromTop (20.0f);
+            g.setColour (juce::Colour::fromRGBA (90, 58, 42, 220));
+            g.setFont (juce::FontOptions (13.0f));
+            g.drawFittedText ("Click anywhere to close   "
+                              + juce::String (it->performanceSessions) + " runs / "
+                              + juce::String (it->performanceSeconds, 1) + "s logged",
+                              subtitle.toNearestInt(), juce::Justification::centredLeft, 1);
+
+            content.removeFromTop (10.0f);
+            auto heatmap = content.removeFromTop (content.getHeight() * 0.78f);
+            auto noteStrip = content.removeFromBottom (18.0f);
+
+            g.setColour (juce::Colour::fromRGBA (74, 52, 38, 56));
+            g.fillRoundedRectangle (heatmap, 8.0f);
+            g.setColour (juce::Colour::fromRGBA (92, 62, 44, 110));
+            g.drawRoundedRectangle (heatmap, 8.0f, 1.0f);
+
+            const int width = juce::jlimit (1, PlanetSurfaceState::maxWidth, it->performanceWidth);
+            const int depth = juce::jlimit (1, PlanetSurfaceState::maxDepth, it->performanceDepth);
+            const float cellW = heatmap.getWidth() / static_cast<float> (width);
+            const float cellH = heatmap.getHeight() / static_cast<float> (depth);
+            const int maxMovement = it->performanceMovementHeat.empty() ? 0 : *std::max_element (it->performanceMovementHeat.begin(), it->performanceMovementHeat.end());
+            const int maxTrigger = it->performanceTriggerHeat.empty() ? 0 : *std::max_element (it->performanceTriggerHeat.begin(), it->performanceTriggerHeat.end());
+
+            for (int y = 0; y < depth; ++y)
+            {
+                for (int x = 0; x < width; ++x)
+                {
+                    const size_t index = static_cast<size_t> (y * width + x);
+                    const int movement = index < it->performanceMovementHeat.size() ? it->performanceMovementHeat[index] : 0;
+                    const int trigger = index < it->performanceTriggerHeat.size() ? it->performanceTriggerHeat[index] : 0;
+                    const float movementAlpha = maxMovement > 0 ? static_cast<float> (movement) / static_cast<float> (maxMovement) : 0.0f;
+                    const float triggerAlpha = maxTrigger > 0 ? static_cast<float> (trigger) / static_cast<float> (maxTrigger) : 0.0f;
+
+                    auto cell = juce::Rectangle<float> (heatmap.getX() + x * cellW,
+                                                        heatmap.getY() + y * cellH,
+                                                        cellW,
+                                                        cellH).reduced (0.8f);
+                    g.setColour (juce::Colour::fromFloatRGBA (0.20f, 0.42f, 0.86f, 0.08f + movementAlpha * 0.58f));
+                    g.fillRect (cell);
+                    if (triggerAlpha > 0.0f)
+                    {
+                        g.setColour (juce::Colour::fromFloatRGBA (1.0f, 0.50f, 0.16f, 0.10f + triggerAlpha * 0.76f));
+                        g.fillRect (cell.reduced (cellW * 0.10f, cellH * 0.10f));
+                    }
+                }
+            }
+
+            if (! it->performanceNoteHeat.empty())
+            {
+                const int maxNote = *std::max_element (it->performanceNoteHeat.begin(), it->performanceNoteHeat.end());
+                const float barW = noteStrip.getWidth() / static_cast<float> (it->performanceNoteHeat.size());
+                for (size_t i = 0; i < it->performanceNoteHeat.size(); ++i)
+                {
+                    const float alpha = maxNote > 0 ? static_cast<float> (it->performanceNoteHeat[i]) / static_cast<float> (maxNote) : 0.0f;
+                    auto bar = juce::Rectangle<float> (noteStrip.getX() + static_cast<float> (i) * barW,
+                                                       noteStrip.getY(),
+                                                       juce::jmax (1.0f, barW - 1.0f),
+                                                       noteStrip.getHeight());
+                    g.setColour (getNoteColourForLayer (static_cast<int> (i)).withAlpha (0.08f + alpha * 0.84f));
+                    g.fillRect (bar);
+                }
+            }
+        }
+    }
+}
+
+float GameComponent::getGalaxyLogMaxScroll (juce::Rectangle<int> area)
+{
+    auto bounds = area.reduced (14);
+    auto page = bounds.toFloat();
+    auto paper = page.reduced (20.0f);
+    auto header = paper.reduced (28.0f);
+    header.removeFromTop (54.0f);
+    header.removeFromTop (22.0f);
+    const auto listArea = header.reduced (0.0f, 10.0f);
+    const auto entryCount = static_cast<int> (persistence.getVisitLog().size());
+    if (entryCount <= 0)
+        return 0.0f;
+
+    const float contentHeight = entryCount * 96.0f + juce::jmax (0, entryCount - 1) * 8.0f;
+    return juce::jmax (0.0f, contentHeight - listArea.getHeight());
 }
 
 void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> area)
@@ -4451,7 +4716,9 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
 {
     ensureActivePlanetLoaded();
 
-    if (builderViewMode == BuilderViewMode::firstPerson && topDownBuildMode == TopDownBuildMode::none)
+    if (! performanceMode
+        && builderViewMode == BuilderViewMode::firstPerson
+        && topDownBuildMode == TopDownBuildMode::none)
     {
         drawFirstPersonBuilder (g, area.reduced (8));
         return;
@@ -6498,12 +6765,16 @@ void GameComponent::stepPerformanceSnakes()
 
         if (snakeTriggerMode == SnakeTriggerMode::headOnly)
         {
+            recordPerformanceMovementCell (nextHead);
             triggerPerformanceNotesAtCell (nextHead);
         }
         else
         {
             for (const auto& segment : snake.body)
+            {
+                recordPerformanceMovementCell (segment);
                 triggerPerformanceNotesAtCell (segment);
+            }
         }
     }
 }
@@ -6555,6 +6826,7 @@ void GameComponent::stepPerformanceOrbiters()
 
         orbiter.direction = direction;
         orbiter.body[0] = next;
+        recordPerformanceMovementCell (next);
         triggerPerformanceNotesAtCell (next);
     }
 }
@@ -6603,7 +6875,10 @@ void GameComponent::stepPerformanceAutomata()
 
     performanceAutomataCells = nextCells;
     for (const auto& cell : performanceAutomataCells)
+    {
+        recordPerformanceMovementCell (cell);
         triggerPerformanceNotesAtCell (cell);
+    }
 }
 
 void GameComponent::stepPerformanceRipples()
@@ -6631,6 +6906,7 @@ void GameComponent::stepPerformanceRipples()
                 if (! bounds.contains (cell))
                     continue;
 
+                recordPerformanceMovementCell (cell);
                 triggerPerformanceNotesAtCell (cell);
                 performanceFlashes.push_back ({ cell, ripple.colour, 0.82f, true });
             }
@@ -6674,6 +6950,7 @@ void GameComponent::stepPerformanceSequencers()
             sequencer.hasPreviousCell = false;
         }
 
+        recordPerformanceMovementCell (sequencer.cell);
         triggerPerformanceNotesAtCell (sequencer.cell);
         performanceFlashes.push_back ({ sequencer.cell, sequencer.colour, 0.90f, true });
 
@@ -6731,6 +7008,7 @@ void GameComponent::timerCallback()
 
     if (currentScene == Scene::builder && performanceMode)
     {
+        performanceSessionSeconds += 1.0 / 30.0;
         if (! performanceSnakes.empty() || ! performanceAutomataCells.empty()
             || ! performanceRipples.empty() || ! performanceSequencers.empty())
         {
