@@ -36,9 +36,10 @@ private:
     enum class TitleAction
     {
         none,
-        beginVoyage,
-        regenerateGalaxy,
-        descend
+        resumeVoyage,
+        loadVoyage,
+        newVoyage,
+        saveVoyage
     };
 
     enum class BuilderViewMode
@@ -60,7 +61,8 @@ private:
         trains,
         orbiters,
         automata,
-        ripple
+        ripple,
+        sequencer
     };
 
     enum class PerformancePlacementMode
@@ -183,6 +185,15 @@ private:
         juce::Colour colour = juce::Colours::white;
     };
 
+    struct PerformanceSequencer
+    {
+        juce::Point<int> cell;
+        juce::Point<int> direction { 1, 0 };
+        juce::Point<int> previousCell;
+        juce::Colour colour = juce::Colours::white;
+        bool hasPreviousCell = false;
+    };
+
     struct PerformanceFlash
     {
         juce::Point<int> cell;
@@ -279,6 +290,7 @@ private:
     int selectedSystemIndex = 0;
     int selectedPlanetIndex = 0;
     TitleAction hoveredTitleAction = TitleAction::none;
+    bool titleResumeAvailable = false;
     std::unique_ptr<PlanetSurfaceState> activePlanetState;
     BuilderViewMode builderViewMode = BuilderViewMode::isometric;
     TopDownBuildMode topDownBuildMode = TopDownBuildMode::none;
@@ -297,7 +309,7 @@ private:
     TetrominoType nextTetrisType = TetrominoType::L;
     int tetrisBuildLayer = 1;
     int tetrisGravityTick = 0;
-    int tetrisGravityFrames = 18;
+    int tetrisGravityFrames = 8;
     int automataBuildLayer = 1;
     std::optional<juce::Point<int>> automataHoverCell;
     int performanceRegionMode = 2;
@@ -307,6 +319,7 @@ private:
     std::vector<PerformanceDisc> performanceDiscs;
     std::vector<PerformanceTrack> performanceTracks;
     std::vector<PerformanceRipple> performanceRipples;
+    std::vector<PerformanceSequencer> performanceSequencers;
     std::vector<juce::Point<int>> performanceOrbitCenters;
     std::vector<juce::Point<int>> performanceAutomataCells;
     std::vector<PerformanceFlash> performanceFlashes;
@@ -388,6 +401,7 @@ private:
     void stepPerformanceOrbiters();
     void stepPerformanceAutomata();
     void stepPerformanceRipples();
+    void stepPerformanceSequencers();
     bool hasPerformanceTrackAt (juce::Point<int> cell) const noexcept;
     bool getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept;
     void drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area);
@@ -425,6 +439,7 @@ private:
     std::array<juce::Point<int>, 4> getTetrominoOffsets (TetrominoType type, int rotation) const;
     std::vector<juce::Point<int>> getTetrisPlacementCells (const TetrisPiece& piece) const;
     bool tetrisPieceFits (const TetrisPiece& piece) const;
+    bool tetrisPieceCollidesWithVoxels (const TetrisPiece& piece) const;
     void clampTetrisPieceToSurface (TetrisPiece& piece) const;
     TetrominoType getRandomTetrominoType() const;
     void spawnTetrisPiece (bool randomizeType);
@@ -450,6 +465,7 @@ private:
     juce::Rectangle<float> titleButtonBounds (juce::Rectangle<float> area, int index) const;
     TitleAction titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const;
     juce::String titleActionLabel (TitleAction action) const;
+    bool isTitleActionEnabled (TitleAction action) const;
     void enterGalaxyFromTitle (bool regenerateGalaxy);
     void drawHeader (juce::Graphics& g, juce::Rectangle<int> area);
     void drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area);

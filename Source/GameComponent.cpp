@@ -882,8 +882,13 @@ void GameComponent::mouseMove (const juce::MouseEvent& event)
             {
                 if (! tetrisPiece.active)
                     spawnTetrisPiece (false);
-                tetrisPiece.anchor = *cell;
-                clampTetrisPieceToSurface (tetrisPiece);
+
+                auto moved = tetrisPiece;
+                moved.anchor.x = cell->x;
+                clampTetrisPieceToSurface (moved);
+
+                if (tetrisPieceFits (moved) && ! tetrisPieceCollidesWithVoxels (moved))
+                    tetrisPiece = moved;
             }
             else
             {
@@ -976,9 +981,10 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
     {
         switch (titleActionAt (event.position, getLocalBounds().toFloat()))
         {
-            case TitleAction::beginVoyage:      enterGalaxyFromTitle (false); break;
-            case TitleAction::regenerateGalaxy: enterGalaxyFromTitle (true); break;
-            case TitleAction::descend:          ensureActivePlanetLoaded(); landOnSelectedPlanet(); break;
+            case TitleAction::resumeVoyage:     if (isTitleActionEnabled (TitleAction::resumeVoyage)) setScene (Scene::galaxy); break;
+            case TitleAction::loadVoyage:       enterGalaxyFromTitle (false); break;
+            case TitleAction::newVoyage:        enterGalaxyFromTitle (true); break;
+            case TitleAction::saveVoyage:       saveActivePlanet(); break;
             case TitleAction::none: break;
         }
         return;
@@ -1048,14 +1054,15 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
 
         if (topDownBuildMode == TopDownBuildMode::tetris)
         {
-            if (const auto cell = getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()))
+            if (getPerformanceCellAtPosition (event.position, getBuilderGridArea().toFloat()).has_value())
             {
                 if (! tetrisPiece.active)
                     spawnTetrisPiece (false);
-                tetrisPiece.anchor = *cell;
-                clampTetrisPieceToSurface (tetrisPiece);
-                const bool remove = event.mods.isRightButtonDown() || event.mods.isCtrlDown();
-                placeTetrisPiece (! remove);
+
+                if (event.mods.isRightButtonDown() || event.mods.isCtrlDown())
+                    hardDropTetrisPiece();
+                else
+                    rotateTetrisPiece();
                 repaint();
             }
             return;
@@ -1104,20 +1111,25 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
 
     if (currentScene == Scene::title)
     {
-        if (key == juce::KeyPress::returnKey || key == juce::KeyPress::spaceKey || lowerChar == 'n')
+        if (lowerChar == 'r')
+        {
+            if (isTitleActionEnabled (TitleAction::resumeVoyage))
+                setScene (Scene::galaxy);
+            return true;
+        }
+        if (key == juce::KeyPress::returnKey || key == juce::KeyPress::spaceKey || lowerChar == 'l')
         {
             enterGalaxyFromTitle (false);
             return true;
         }
-        if (lowerChar == 'r')
+        if (lowerChar == 'n')
         {
             enterGalaxyFromTitle (true);
             return true;
         }
-        if (lowerChar == 'd')
+        if (lowerChar == 's')
         {
-            ensureActivePlanetLoaded();
-            landOnSelectedPlanet();
+            saveActivePlanet();
             return true;
         }
     }
@@ -1137,6 +1149,12 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
         }
         if (galaxyLogOpen)
             return true;
+        if (key == juce::KeyPress::escapeKey)
+        {
+            galaxyLogOpen = false;
+            setScene (Scene::title);
+            return true;
+        }
         if (key == juce::KeyPress::leftKey)   { moveSystemSelection (-1); return true; }
         if (key == juce::KeyPress::rightKey)  { moveSystemSelection (1); return true; }
         if (key == juce::KeyPress::upKey)     { movePlanetSelection (-1); return true; }
@@ -1177,7 +1195,8 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
                 performanceEntryView = builderViewMode;
                 performanceEntryTopDownMode = topDownBuildMode;
                 applyPerformanceEntryDefaults();
-                if (performanceSnakes.empty() && performanceAutomataCells.empty())
+                if (performanceSnakes.empty() && performanceAutomataCells.empty()
+                    && performanceRipples.empty() && performanceSequencers.empty())
                     resetPerformanceAgents();
             }
             else
@@ -1232,7 +1251,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             }
             if (lowerChar == 'n')
             {
-                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 5);
+                performanceAgentMode = static_cast<PerformanceAgentMode> ((static_cast<int> (performanceAgentMode) + 1) % 6);
                 resetPerformanceAgents();
                 repaint();
                 return true;
@@ -2027,6 +2046,7 @@ void GameComponent::resetPerformanceState()
     performanceDiscs.clear();
     performanceTracks.clear();
     performanceRipples.clear();
+    performanceSequencers.clear();
     performanceOrbitCenters.clear();
     performanceAutomataCells.clear();
     performanceFlashes.clear();
@@ -2071,6 +2091,7 @@ void GameComponent::applyPerformancePresetForPlanet()
         case PlanetPerformanceMode::snakes: performanceAgentMode = PerformanceAgentMode::snakes; break;
         case PlanetPerformanceMode::trains: performanceAgentMode = PerformanceAgentMode::trains; break;
         case PlanetPerformanceMode::ripple: performanceAgentMode = PerformanceAgentMode::ripple; break;
+        case PlanetPerformanceMode::sequencer: performanceAgentMode = PerformanceAgentMode::sequencer; break;
     }
     performanceBpm = static_cast<double> (tempoDist (rng));
     synthEngine = SynthEngine::chipPulse;
@@ -2096,6 +2117,7 @@ void GameComponent::resetPerformanceAgents()
     performanceSnakes.clear();
     performanceAutomataCells.clear();
     performanceRipples.clear();
+    performanceSequencers.clear();
     performanceFlashes.clear();
     performanceTick = 0;
 
@@ -2146,6 +2168,31 @@ void GameComponent::resetPerformanceAgents()
             ripple.maxRadius = 2 + rng.nextInt (5);
             ripple.colour = rippleColours[static_cast<size_t> (i % static_cast<int> (rippleColours.size()))];
             performanceRipples.push_back (ripple);
+        }
+        return;
+    }
+
+    if (performanceAgentMode == PerformanceAgentMode::sequencer)
+    {
+        const int sequencerCount = juce::jmax (1, performanceAgentCount);
+        static const std::array<juce::Colour, 8> sequencerColours {
+            juce::Colour::fromRGB (110, 240, 255), juce::Colour::fromRGB (255, 192, 94),
+            juce::Colour::fromRGB (255, 122, 168), juce::Colour::fromRGB (160, 132, 255),
+            juce::Colour::fromRGB (122, 232, 118), juce::Colour::fromRGB (255, 144, 104),
+            juce::Colour::fromRGB (252, 238, 110), juce::Colour::fromRGB (190, 244, 255)
+        };
+
+        for (int i = 0; i < sequencerCount; ++i)
+        {
+            PerformanceSequencer sequencer;
+            const int laneY = bounds.getY() + ((i * juce::jmax (1, bounds.getHeight() - 1))
+                                              / juce::jmax (1, sequencerCount - 1));
+            sequencer.cell = { bounds.getX(), juce::jlimit (bounds.getY(), bounds.getBottom() - 1, laneY) };
+            sequencer.previousCell = sequencer.cell;
+            sequencer.direction = { 1, 0 };
+            sequencer.colour = sequencerColours[static_cast<size_t> (i % static_cast<int> (sequencerColours.size()))];
+            sequencer.hasPreviousCell = false;
+            performanceSequencers.push_back (sequencer);
         }
         return;
     }
@@ -2215,6 +2262,7 @@ juce::String GameComponent::getPerformanceAgentModeName() const
         case PerformanceAgentMode::orbiters: return "Orbiters";
         case PerformanceAgentMode::automata: return "Automata";
         case PerformanceAgentMode::ripple: return "Ripple";
+        case PerformanceAgentMode::sequencer: return "Beam";
     }
 
     return "Snakes";
@@ -2543,6 +2591,7 @@ juce::String GameComponent::getPlanetPerformanceModeName (PlanetPerformanceMode 
         case PlanetPerformanceMode::snakes: return "Snakes";
         case PlanetPerformanceMode::trains: return "Trains";
         case PlanetPerformanceMode::ripple: return "Ripple";
+        case PlanetPerformanceMode::sequencer: return "Beam";
     }
 
     return "Snakes";
@@ -2654,14 +2703,41 @@ bool GameComponent::tetrisPieceFits (const TetrisPiece& piece) const
     if (activePlanetState == nullptr || ! piece.active)
         return false;
 
-    if (! juce::isPositiveAndBelow (piece.z, getSurfaceHeight()))
+    const auto intervals = getActiveChordStackIntervals();
+    if (intervals.empty())
         return false;
 
     for (const auto& cell : getTetrisPlacementCells (piece))
+    {
         if (! juce::isPositiveAndBelow (cell.x, getSurfaceWidth()) || ! juce::isPositiveAndBelow (cell.y, getSurfaceDepth()))
             return false;
 
+        for (const int interval : intervals)
+        {
+            const int noteZ = piece.z + interval;
+            if (noteZ < 1 || noteZ >= getSurfaceHeight())
+                return false;
+        }
+    }
+
     return true;
+}
+
+bool GameComponent::tetrisPieceCollidesWithVoxels (const TetrisPiece& piece) const
+{
+    if (activePlanetState == nullptr || ! piece.active || ! tetrisPieceFits (piece))
+        return false;
+
+    const auto intervals = getActiveChordStackIntervals();
+    for (const auto& cell : getTetrisPlacementCells (piece))
+        for (const int interval : intervals)
+        {
+            const int noteZ = piece.z + interval;
+            if (activePlanetState->getBlock (cell.x, cell.y, noteZ) != 0)
+                return true;
+        }
+
+    return false;
 }
 
 void GameComponent::clampTetrisPieceToSurface (TetrisPiece& piece) const
@@ -2701,11 +2777,38 @@ void GameComponent::spawnTetrisPiece (bool randomizeType)
 
     tetrisPiece.type = nextTetrisType;
     tetrisPiece.rotation = 0;
-    tetrisPiece.anchor = { getSurfaceWidth() / 2, getSurfaceDepth() / 2 };
+    tetrisPiece.anchor = { getSurfaceWidth() / 2, 0 };
     tetrisPiece.z = juce::jlimit (1, getSurfaceHeight() - 1, tetrisBuildLayer);
     tetrisPiece.active = true;
     clampTetrisPieceToSurface (tetrisPiece);
+
+    if (tetrisPieceCollidesWithVoxels (tetrisPiece))
+    {
+        const int spawnRow = tetrisPiece.anchor.y;
+        bool foundOpenSpawn = false;
+
+        for (int radius = 1; radius < getSurfaceWidth() && ! foundOpenSpawn; ++radius)
+            for (int dir : { -1, 1 })
+            {
+                auto candidate = tetrisPiece;
+                candidate.anchor.x = (getSurfaceWidth() / 2) + dir * radius;
+                candidate.anchor.y = spawnRow;
+                clampTetrisPieceToSurface (candidate);
+
+                if (tetrisPieceFits (candidate) && ! tetrisPieceCollidesWithVoxels (candidate))
+                {
+                    tetrisPiece = candidate;
+                    foundOpenSpawn = true;
+                    break;
+                }
+            }
+
+        if (! foundOpenSpawn && tetrisPieceCollidesWithVoxels (tetrisPiece))
+            tetrisPiece.active = false;
+    }
+
     nextTetrisType = getRandomTetrominoType();
+    tetrisGravityTick = 0;
 }
 
 void GameComponent::moveTetrisPiece (int dx, int dy, int dz)
@@ -2717,7 +2820,12 @@ void GameComponent::moveTetrisPiece (int dx, int dy, int dz)
     moved.anchor += juce::Point<int> (dx, dy);
     moved.z += dz;
     clampTetrisPieceToSurface (moved);
-    tetrisPiece = moved;
+
+    if (moved.anchor == tetrisPiece.anchor && moved.z == tetrisPiece.z)
+        return;
+
+    if (tetrisPieceFits (moved) && ! tetrisPieceCollidesWithVoxels (moved))
+        tetrisPiece = moved;
 }
 
 void GameComponent::rotateTetrisPiece()
@@ -2728,7 +2836,9 @@ void GameComponent::rotateTetrisPiece()
     auto rotated = tetrisPiece;
     rotated.rotation = (rotated.rotation + 1) % 4;
     clampTetrisPieceToSurface (rotated);
-    tetrisPiece = rotated;
+
+    if (tetrisPieceFits (rotated) && ! tetrisPieceCollidesWithVoxels (rotated))
+        tetrisPiece = rotated;
 }
 
 void GameComponent::placeTetrisPiece (bool filled)
@@ -2743,12 +2853,15 @@ void GameComponent::placeTetrisPiece (bool filled)
     if (! tetrisPieceFits (tetrisPiece))
         return;
 
+    if (filled && tetrisPieceCollidesWithVoxels (tetrisPiece))
+        return;
+
     const auto intervals = getActiveChordStackIntervals();
     for (const auto& cell : getTetrisPlacementCells (tetrisPiece))
     {
         for (const int interval : intervals)
         {
-            const int z = juce::jlimit (1, getSurfaceHeight() - 1, tetrisPiece.z + interval - builderLayer);
+            const int z = juce::jlimit (1, getSurfaceHeight() - 1, tetrisPiece.z + interval);
             const int mappedBlockType = 1 + (z % 4);
             activePlanetState->setBlock (cell.x, cell.y, z, filled ? mappedBlockType : 0);
         }
@@ -2760,18 +2873,46 @@ void GameComponent::placeTetrisPiece (bool filled)
 
 void GameComponent::softDropTetrisPiece()
 {
-    moveTetrisPiece (0, 1, 0);
+    if (! tetrisPiece.active)
+    {
+        spawnTetrisPiece (true);
+        return;
+    }
+
+    auto dropped = tetrisPiece;
+    dropped.anchor.y += 1;
+    clampTetrisPieceToSurface (dropped);
+
+    const bool movedDown = dropped.anchor.y != tetrisPiece.anchor.y;
+    if (movedDown && tetrisPieceFits (dropped) && ! tetrisPieceCollidesWithVoxels (dropped))
+    {
+        tetrisPiece = dropped;
+        return;
+    }
+
+    if (tetrisPieceFits (tetrisPiece) && ! tetrisPieceCollidesWithVoxels (tetrisPiece))
+        placeTetrisPiece (true);
 }
 
 void GameComponent::hardDropTetrisPiece()
 {
     if (! tetrisPiece.active)
-        spawnTetrisPiece (false);
+        spawnTetrisPiece (true);
 
-    tetrisPiece.anchor.y = getSurfaceDepth() / 2;
-    clampTetrisPieceToSurface (tetrisPiece);
-    tetrisPiece.anchor.y = getSurfaceDepth() - 1;
-    clampTetrisPieceToSurface (tetrisPiece);
+    while (true)
+    {
+        auto dropped = tetrisPiece;
+        dropped.anchor.y += 1;
+        clampTetrisPieceToSurface (dropped);
+
+        if (dropped.anchor.y == tetrisPiece.anchor.y || ! tetrisPieceFits (dropped) || tetrisPieceCollidesWithVoxels (dropped))
+            break;
+
+        tetrisPiece = dropped;
+    }
+
+    if (tetrisPieceFits (tetrisPiece) && ! tetrisPieceCollidesWithVoxels (tetrisPiece))
+        placeTetrisPiece (true);
 }
 
 void GameComponent::advanceTetrisLayer()
@@ -3145,16 +3286,23 @@ juce::Rectangle<float> GameComponent::titleButtonBounds (juce::Rectangle<float> 
     auto row = titleCardBounds (area).reduced (42.0f, 34.0f);
     row.removeFromTop (row.getHeight() - 146.0f);
     const float gap = 18.0f;
-    const float buttonWidth = (row.getWidth() - gap * 2.0f) / 3.0f;
+    const float buttonWidth = (row.getWidth() - gap * 3.0f) / 4.0f;
     row.removeFromLeft ((buttonWidth + gap) * static_cast<float> (index));
     return row.removeFromLeft (buttonWidth).removeFromTop (124.0f);
 }
 
 GameComponent::TitleAction GameComponent::titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const
 {
-    for (int i = 0; i < 3; ++i)
-        if (titleButtonBounds (area, i).expanded (10.0f, 8.0f).contains (position))
-            return static_cast<TitleAction> (i + 1);
+    const std::array<TitleAction, 4> actions {
+        TitleAction::resumeVoyage,
+        TitleAction::loadVoyage,
+        TitleAction::newVoyage,
+        TitleAction::saveVoyage
+    };
+
+    for (int i = 0; i < 4; ++i)
+        if (titleButtonBounds (area, i).expanded (10.0f, 8.0f).contains (position) && isTitleActionEnabled (actions[static_cast<size_t> (i)]))
+            return actions[static_cast<size_t> (i)];
 
     return TitleAction::none;
 }
@@ -3163,13 +3311,22 @@ juce::String GameComponent::titleActionLabel (TitleAction action) const
 {
     switch (action)
     {
-        case TitleAction::beginVoyage: return "LOAD";
-        case TitleAction::regenerateGalaxy: return "NEW";
-        case TitleAction::descend: return "SAVE";
+        case TitleAction::resumeVoyage: return "RESUME";
+        case TitleAction::loadVoyage: return "LOAD";
+        case TitleAction::newVoyage: return "NEW";
+        case TitleAction::saveVoyage: return "SAVE";
         case TitleAction::none: break;
     }
 
     return {};
+}
+
+bool GameComponent::isTitleActionEnabled (TitleAction action) const
+{
+    if (action == TitleAction::resumeVoyage)
+        return titleResumeAvailable;
+
+    return true;
 }
 
 void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
@@ -3182,6 +3339,7 @@ void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
         activePlanetState.reset();
     }
 
+    titleResumeAvailable = true;
     hoveredTitleAction = TitleAction::none;
     setScene (Scene::galaxy);
 }
@@ -3514,52 +3672,81 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     stepsArea.removeFromTop (stepGap);
     drawStep (stepsArea.removeFromTop (stepHeight), "3", "Build the world", "Shape the silent surface into a persistent musical landscape and hear it answer back.");
 
-    const float buttonGap = 26.0f;
-    const float buttonWidth = (actionsRow.getWidth() - buttonGap * 2.0f) / 3.0f;
-    const std::array<TitleAction, 3> actions { TitleAction::beginVoyage, TitleAction::regenerateGalaxy, TitleAction::descend };
-    const std::array<juce::String, 3> captions {
-        "Enter the current seeded galaxy and start navigating star systems",
-        "Generate a fresh galaxy seed and restart the voyage from a new atlas",
-        "Jump straight to the currently selected planet and enter landing approach"
+    const float buttonGap = 18.0f;
+    const float buttonWidth = (actionsRow.getWidth() - buttonGap * 3.0f) / 4.0f;
+    const std::array<TitleAction, 4> actions {
+        TitleAction::resumeVoyage,
+        TitleAction::loadVoyage,
+        TitleAction::newVoyage,
+        TitleAction::saveVoyage
+    };
+    const std::array<juce::String, 4> captions {
+        "Return to the current voyage and continue charting the galaxy.",
+        "Load the current seeded galaxy and begin navigating star systems.",
+        "Generate a fresh seeded cosmos and begin a new voyage.",
+        "Save the current galaxy and any planetary changes."
     };
     for (size_t i = 0; i < actions.size(); ++i)
     {
         auto button = actionsRow.removeFromLeft (buttonWidth);
         if (i + 1 < actions.size())
             actionsRow.removeFromLeft (buttonGap);
-        const bool hovered = hoveredTitleAction == actions[i];
+        const bool enabled = isTitleActionEnabled (actions[i]);
+        const bool hovered = enabled && hoveredTitleAction == actions[i];
         const float pulse = hovered ? (0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.006))) : 0.0f;
         const float lift = hovered ? -4.0f : 0.0f;
         button = button.translated (0.0f, lift);
-        g.setColour (juce::Colour::fromRGBA (0, 0, 0, hovered ? 118 : 74));
+        g.setColour (juce::Colour::fromRGBA (0, 0, 0, hovered ? 118 : (enabled ? 74 : 52)));
         g.fillRoundedRectangle (button.translated (0.0f, 6.0f), 22.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 38 : 18));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 38 : (enabled ? 18 : 10)));
         g.fillRoundedRectangle (button.translated (0.0f, 2.0f), 22.0f);
-        juce::ColourGradient buttonFill ((i == 0)
-                                             ? (hovered ? juce::Colour::fromRGBA (34, 118, 214, 246)
-                                                        : juce::Colour::fromRGBA (24, 70, 154, 234))
-                                             : ((i == 1)
-                                                    ? (hovered ? juce::Colour::fromRGBA (186, 86, 220, 246)
-                                                               : juce::Colour::fromRGBA (118, 42, 172, 234))
-                                                    : (hovered ? juce::Colour::fromRGBA (255, 128, 96, 246)
-                                                               : juce::Colour::fromRGBA (184, 66, 94, 234))),
+        const auto topColour = [&]() -> juce::Colour
+        {
+            if (! enabled)
+                return juce::Colour::fromRGBA (86, 92, 112, 228);
+            if (i == 0)
+                return hovered ? juce::Colour::fromRGBA (112, 126, 146, 244)
+                               : juce::Colour::fromRGBA (76, 88, 108, 232);
+            if (i == 1)
+                return hovered ? juce::Colour::fromRGBA (34, 118, 214, 246)
+                               : juce::Colour::fromRGBA (24, 70, 154, 234);
+            if (i == 2)
+                return hovered ? juce::Colour::fromRGBA (186, 86, 220, 246)
+                               : juce::Colour::fromRGBA (118, 42, 172, 234);
+            return hovered ? juce::Colour::fromRGBA (255, 128, 96, 246)
+                           : juce::Colour::fromRGBA (184, 66, 94, 234);
+        }();
+
+        const auto bottomColour = [&]() -> juce::Colour
+        {
+            if (! enabled)
+                return juce::Colour::fromRGBA (42, 46, 62, 244);
+            if (i == 0)
+                return juce::Colour::fromRGBA (28, 34, 48, 246);
+            if (i == 1)
+                return juce::Colour::fromRGBA (10, 20, 64, 248);
+            if (i == 2)
+                return juce::Colour::fromRGBA (34, 10, 68, 248);
+            return juce::Colour::fromRGBA (58, 14, 48, 248);
+        }();
+        juce::ColourGradient buttonFill (topColour,
                                          button.getCentreX(), button.getY(),
-                                         (i == 0) ? juce::Colour::fromRGBA (10, 20, 64, 248)
-                                                  : ((i == 1) ? juce::Colour::fromRGBA (34, 10, 68, 248)
-                                                              : juce::Colour::fromRGBA (58, 14, 48, 248)),
+                                         bottomColour,
                                          button.getCentreX(), button.getBottom(),
                                          false);
         g.setGradientFill (buttonFill);
         g.fillRoundedRectangle (button, 22.0f);
-        g.setColour (hovered ? juce::Colour::fromRGBA (255, 222, 150, static_cast<uint8_t> (184 + 34 * pulse))
-                             : juce::Colour::fromRGBA (110, 214, 255, 138));
+        g.setColour (! enabled ? juce::Colour::fromRGBA (172, 178, 194, 92)
+                               : (hovered ? juce::Colour::fromRGBA (255, 222, 150, static_cast<uint8_t> (184 + 34 * pulse))
+                                          : juce::Colour::fromRGBA (110, 214, 255, 138)));
         g.drawRoundedRectangle (button, 22.0f, hovered ? 2.6f : 1.4f);
-        g.setColour (hovered ? juce::Colour::fromRGBA (255, 176, 112, static_cast<uint8_t> (40 + 28 * pulse))
-                             : juce::Colour::fromRGBA (92, 190, 255, 30));
+        g.setColour (! enabled ? juce::Colour::fromRGBA (255, 255, 255, 12)
+                               : (hovered ? juce::Colour::fromRGBA (255, 176, 112, static_cast<uint8_t> (40 + 28 * pulse))
+                                          : juce::Colour::fromRGBA (92, 190, 255, 30)));
         g.fillRoundedRectangle (button.reduced (5.0f, 5.0f), 18.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 78 : 52));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 78 : (enabled ? 52 : 26)));
         g.fillRoundedRectangle (button.withHeight (18.0f).reduced (12.0f, 4.0f), 10.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 122 : 84));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 122 : (enabled ? 84 : 40)));
         g.fillRoundedRectangle (button.reduced (16.0f, 12.0f).withHeight (14.0f), 7.0f);
         juce::Path buttonSweep;
         buttonSweep.startNewSubPath (button.getX() + 18.0f, button.getY() + 20.0f);
@@ -3567,27 +3754,27 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         buttonSweep.lineTo (button.getX() + button.getWidth() * 0.38f, button.getY() + button.getHeight() - 20.0f);
         buttonSweep.lineTo (button.getX() + 8.0f, button.getY() + button.getHeight() - 20.0f);
         buttonSweep.closeSubPath();
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 56 : 34));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 56 : (enabled ? 34 : 16)));
         g.fillPath (buttonSweep);
         auto buttonInner = button.reduced (20.0f, 14.0f);
         auto topStrip = buttonInner.removeFromTop (22.0f);
         auto actionTag = topStrip.removeFromLeft (56.0f);
-        g.setColour (hovered ? juce::Colour::fromRGBA (255, 210, 140, 118)
-                             : juce::Colour::fromRGBA (112, 214, 255, 78));
+        g.setColour (! enabled ? juce::Colour::fromRGBA (146, 152, 166, 46)
+                               : (hovered ? juce::Colour::fromRGBA (255, 210, 140, 118)
+                                          : juce::Colour::fromRGBA (112, 214, 255, 78)));
         g.fillRoundedRectangle (actionTag, 11.0f);
-        g.setColour (juce::Colours::white);
+        g.setColour (enabled ? juce::Colours::white : juce::Colours::white.withAlpha (0.52f));
         g.setFont (juce::FontOptions (12.5f));
         g.drawText ("STEP", actionTag.toNearestInt(), juce::Justification::centred);
         buttonInner.removeFromTop (10.0f);
-        g.setColour (juce::Colours::white);
+        g.setColour (enabled ? juce::Colours::white : juce::Colours::white.withAlpha (0.55f));
         g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
         g.drawText (titleActionLabel (actions[i]), buttonInner.removeFromTop (30.0f).toNearestInt(), juce::Justification::centredLeft);
         buttonInner.removeFromTop (4.0f);
-        g.setColour (juce::Colour::fromRGBA (216, 232, 255, 218));
+        g.setColour (enabled ? juce::Colour::fromRGBA (216, 232, 255, 218)
+                             : juce::Colour::fromRGBA (188, 196, 210, 138));
         g.setFont (juce::FontOptions (14.0f));
-        g.drawFittedText ((i == 0) ? "Resume the current galaxy and continue charting your route."
-                                   : ((i == 1) ? "Generate a fresh seeded cosmos and begin a new voyage."
-                                               : "Commit the current state of your galaxy and planets."),
+        g.drawFittedText (captions[i],
                           buttonInner.toNearestInt(), juce::Justification::topLeft, 3);
     }
 
@@ -3600,7 +3787,7 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     g.fillRoundedRectangle (footerCloud.reduced (18.0f, 6.0f).withHeight (8.0f), 6.0f);
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 220));
     g.setFont (juce::FontOptions (13.0f));
-    g.drawText ("Load continues   New starts fresh   Save preserves the current voyage",
+    g.drawText ("Resume returns to your voyage   Load enters the current galaxy   New starts fresh   Save preserves the current voyage",
                 footerCloud.toNearestInt(),
                 juce::Justification::centred);
 }
@@ -4371,7 +4558,7 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (11.6f * uiScale));
     const juce::String controlsText = topDownBuildMode == TopDownBuildMode::tetris
-                                        ? "Move arrows   Layer [ ]   Notes 1-4   Chord V\nRotate R   New N   Soft drop S   Hard drop Space   Place click/O   Delete X"
+                                        ? "Move arrows or mouse   Layer [ ]   Notes 1-4   Chord V\nRotate R or left click   New N   Soft drop S   Hard drop Space/right click   Place O   Delete X"
                                         : topDownBuildMode == TopDownBuildMode::cellularAutomata
                                             ? "Move arrows   Layer [ ]   Notes 1-4\nSeed click/O   Delete X   Randomise N   E evolve next layer"
                                             : "Pan WASD   Rotate Q/E   Height [ ]   Notes 1-4\nCycle chord V   Place click/O   Delete X   Exit Esc";
@@ -4621,6 +4808,66 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
         g.fillEllipse (core);
         g.setColour (juce::Colours::white.withAlpha (0.64f));
         g.fillEllipse (core.reduced (tileSize * 0.18f));
+    }
+
+    for (const auto& sequencer : performanceSequencers)
+    {
+        if (! activeRegion.contains (sequencer.cell))
+            continue;
+
+        const auto cell = juce::Rectangle<float> (board.getX() + sequencer.cell.x * tileSize,
+                                                  board.getY() + sequencer.cell.y * tileSize,
+                                                  tileSize,
+                                                  tileSize);
+        const auto centre = cell.getCentre();
+
+        if (sequencer.hasPreviousCell && activeRegion.contains (sequencer.previousCell))
+        {
+            const auto previousCell = juce::Rectangle<float> (board.getX() + sequencer.previousCell.x * tileSize,
+                                                              board.getY() + sequencer.previousCell.y * tileSize,
+                                                              tileSize,
+                                                              tileSize);
+            juce::Path trail;
+            trail.startNewSubPath (previousCell.getCentre());
+            trail.lineTo (centre);
+
+            g.setColour (sequencer.colour.withAlpha (0.12f + 0.08f * pulse));
+            g.strokePath (trail, juce::PathStrokeType (tileSize * 0.42f,
+                                                       juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+            g.setColour (sequencer.colour.withAlpha (0.88f));
+            g.strokePath (trail, juce::PathStrokeType (tileSize * 0.12f,
+                                                       juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+        }
+
+        auto glow = cell.reduced (tileSize * 0.04f);
+        auto head = cell.reduced (tileSize * 0.22f);
+        g.setColour (sequencer.colour.withAlpha (0.14f + 0.10f * beatPulse));
+        g.fillEllipse (glow.expanded (tileSize * 0.18f));
+        g.setColour (sequencer.colour.withAlpha (0.26f + 0.16f * pulse));
+        g.fillRoundedRectangle (head.expanded (tileSize * 0.16f), 8.0f);
+        g.setColour (sequencer.colour.withAlpha (0.96f));
+        g.fillRoundedRectangle (head, 6.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.80f));
+        g.drawRoundedRectangle (head, 6.0f, 1.8f);
+
+        const juce::Point<float> dir (static_cast<float> (sequencer.direction.x),
+                                      static_cast<float> (sequencer.direction.y));
+        if (sequencer.direction.x != 0 || sequencer.direction.y != 0)
+        {
+            const juce::Point<float> perp (-dir.y, dir.x);
+            const float arrowRadius = head.getWidth() * 0.18f;
+            const auto arrowTip = centre + dir * (head.getWidth() * 0.30f);
+            const auto arrowBase = centre - dir * (head.getWidth() * 0.02f);
+            juce::Path arrow;
+            arrow.startNewSubPath (arrowBase + perp * arrowRadius);
+            arrow.lineTo (arrowTip);
+            arrow.lineTo (arrowBase - perp * arrowRadius);
+            arrow.closeSubPath();
+            g.setColour (juce::Colour::fromRGBA (8, 16, 34, 190));
+            g.fillPath (arrow);
+        }
     }
 
     for (const auto& cellPoint : performanceAutomataCells)
@@ -4913,6 +5160,8 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
                                          ? static_cast<int> (performanceAutomataCells.size())
                                          : performanceAgentMode == PerformanceAgentMode::ripple
                                              ? static_cast<int> (performanceRipples.size())
+                                             : performanceAgentMode == PerformanceAgentMode::sequencer
+                                                 ? static_cast<int> (performanceSequencers.size())
                                              : performanceAgentCount;
     drawCard (card, "AGENTS", getPerformanceAgentModeName(), juce::String (activeAgentVisualCount) + " active | 0-8 count");
     inner.removeFromTop (10.0f);
@@ -5532,7 +5781,8 @@ void GameComponent::drawTetrisBuildView (juce::Graphics& g, juce::Rectangle<floa
 
     if (tetrisPiece.active)
     {
-        const auto previewColour = tetrisPieceFits (tetrisPiece)
+        const bool pieceFits = tetrisPieceFits (tetrisPiece) && ! tetrisPieceCollidesWithVoxels (tetrisPiece);
+        const auto previewColour = pieceFits
                                      ? juce::Colour::fromRGBA (84, 238, 255, 188)
                                      : juce::Colour::fromRGBA (255, 116, 116, 188);
         for (const auto& placementCell : getTetrisPlacementCells (tetrisPiece))
@@ -6149,6 +6399,9 @@ void GameComponent::stepPerformanceAgents()
         case PerformanceAgentMode::ripple:
             stepPerformanceRipples();
             break;
+        case PerformanceAgentMode::sequencer:
+            stepPerformanceSequencers();
+            break;
     }
 }
 
@@ -6393,6 +6646,75 @@ void GameComponent::stepPerformanceRipples()
     }
 }
 
+void GameComponent::stepPerformanceSequencers()
+{
+    const auto bounds = getPerformanceRegionBounds();
+    if (performanceSequencers.empty())
+    {
+        resetPerformanceAgents();
+        if (performanceSequencers.empty())
+            return;
+    }
+
+    juce::Random rng;
+    auto randomLeftLaunch = [&]() -> std::pair<juce::Point<int>, juce::Point<int>>
+    {
+        const bool startFromTop = rng.nextBool();
+        if (startFromTop)
+            return { { bounds.getX(), bounds.getY() }, { 0, 1 } };
+        return { { bounds.getX(), bounds.getBottom() - 1 }, { 0, -1 } };
+    };
+
+    for (auto& sequencer : performanceSequencers)
+    {
+        if (! bounds.contains (sequencer.cell))
+        {
+            sequencer.cell = { bounds.getX(), bounds.getY() };
+            sequencer.direction = { 1, 0 };
+            sequencer.hasPreviousCell = false;
+        }
+
+        triggerPerformanceNotesAtCell (sequencer.cell);
+        performanceFlashes.push_back ({ sequencer.cell, sequencer.colour, 0.90f, true });
+
+        auto nextCell = sequencer.cell + sequencer.direction;
+        if (bounds.contains (nextCell))
+        {
+            sequencer.previousCell = sequencer.cell;
+            sequencer.cell = nextCell;
+            sequencer.hasPreviousCell = true;
+            continue;
+        }
+
+        if (rng.nextBool())
+        {
+            auto [cornerCell, cornerDirection] = randomLeftLaunch();
+            sequencer.previousCell = sequencer.cell;
+            sequencer.cell = cornerCell;
+            sequencer.direction = cornerDirection;
+            sequencer.hasPreviousCell = true;
+        }
+        else
+        {
+            if (sequencer.direction.x != 0)
+            {
+                const int nextRow = juce::jlimit (bounds.getY(), bounds.getBottom() - 1, sequencer.cell.y);
+                sequencer.previousCell = sequencer.cell;
+                sequencer.cell = { bounds.getX(), nextRow };
+                sequencer.direction = { 1, 0 };
+            }
+            else
+            {
+                const int nextRow = bounds.getY() + rng.nextInt (bounds.getHeight());
+                sequencer.previousCell = sequencer.cell;
+                sequencer.cell = { bounds.getX(), nextRow };
+                sequencer.direction = { 1, 0 };
+            }
+            sequencer.hasPreviousCell = true;
+        }
+    }
+}
+
 void GameComponent::timerCallback()
 {
     for (auto it = performanceFlashes.begin(); it != performanceFlashes.end();)
@@ -6409,7 +6731,8 @@ void GameComponent::timerCallback()
 
     if (currentScene == Scene::builder && performanceMode)
     {
-        if (! performanceSnakes.empty() || ! performanceAutomataCells.empty() || ! performanceRipples.empty())
+        if (! performanceSnakes.empty() || ! performanceAutomataCells.empty()
+            || ! performanceRipples.empty() || ! performanceSequencers.empty())
         {
             performanceStepAccumulator += performanceBpm / 60.0 / 30.0;
             while (performanceStepAccumulator >= 0.25)
@@ -6431,8 +6754,8 @@ void GameComponent::timerCallback()
         {
             tetrisGravityTick = 0;
             softDropTetrisPiece();
-            repaint();
         }
+        repaint();
         return;
     }
 

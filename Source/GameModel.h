@@ -15,7 +15,8 @@ enum class PlanetPerformanceMode
 {
     snakes,
     trains,
-    ripple
+    ripple,
+    sequencer
 };
 
 struct PlanetMetadata
