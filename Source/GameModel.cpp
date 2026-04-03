@@ -56,6 +56,342 @@ juce::Colour colourFromSeed (int seed, float saturation, float brightness)
     return juce::Colour::fromHSV (random.nextFloat(), saturation, brightness, 1.0f);
 }
 
+juce::Colour buildModeColour (PlanetBuildMode mode)
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric:        return juce::Colour::fromRGB (94, 218, 255);
+        case PlanetBuildMode::firstPerson:      return juce::Colour::fromRGB (255, 160, 92);
+        case PlanetBuildMode::cellularAutomata: return juce::Colour::fromRGB (124, 238, 118);
+        case PlanetBuildMode::tetris:           return juce::Colour::fromRGB (255, 84, 132);
+    }
+
+    return juce::Colour::fromRGB (94, 218, 255);
+}
+
+juce::Colour performanceModeColour (PlanetPerformanceMode mode)
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes:    return juce::Colour::fromRGB (255, 214, 88);
+        case PlanetPerformanceMode::trains:    return juce::Colour::fromRGB (84, 168, 255);
+        case PlanetPerformanceMode::ripple:    return juce::Colour::fromRGB (92, 236, 255);
+        case PlanetPerformanceMode::sequencer: return juce::Colour::fromRGB (255, 102, 224);
+        case PlanetPerformanceMode::tenori:    return juce::Colour::fromRGB (188, 124, 255);
+    }
+
+    return juce::Colour::fromRGB (255, 214, 88);
+}
+
+juce::String traitToString (PlanetTrait trait)
+{
+    switch (trait)
+    {
+        case PlanetTrait::none:     return "none";
+        case PlanetTrait::echo:     return "echo";
+        case PlanetTrait::storm:    return "storm";
+        case PlanetTrait::bloom:    return "bloom";
+        case PlanetTrait::fracture: return "fracture";
+        case PlanetTrait::mirror:   return "mirror";
+    }
+
+    return "none";
+}
+
+PlanetTrait traitFromString (const juce::String& text)
+{
+    if (text == "echo")
+        return PlanetTrait::echo;
+    if (text == "storm")
+        return PlanetTrait::storm;
+    if (text == "bloom")
+        return PlanetTrait::bloom;
+    if (text == "fracture")
+        return PlanetTrait::fracture;
+    if (text == "mirror")
+        return PlanetTrait::mirror;
+    return PlanetTrait::none;
+}
+
+juce::Colour traitColour (PlanetTrait trait)
+{
+    switch (trait)
+    {
+        case PlanetTrait::none:     return juce::Colour::fromRGB (214, 224, 255);
+        case PlanetTrait::echo:     return juce::Colour::fromRGB (122, 242, 255);
+        case PlanetTrait::storm:    return juce::Colour::fromRGB (255, 112, 228);
+        case PlanetTrait::bloom:    return juce::Colour::fromRGB (255, 216, 118);
+        case PlanetTrait::fracture: return juce::Colour::fromRGB (255, 108, 124);
+        case PlanetTrait::mirror:   return juce::Colour::fromRGB (156, 188, 255);
+    }
+
+    return juce::Colour::fromRGB (214, 224, 255);
+}
+
+juce::Colour skyColourForPlanet (const PlanetMetadata& planet)
+{
+    const auto buildTint = buildModeColour (planet.assignedBuildMode);
+    const auto perfTint = performanceModeColour (planet.assignedPerformanceMode);
+    const auto identity = planet.accent.interpolatedWith (buildTint, 0.36f)
+                                      .interpolatedWith (perfTint, 0.24f)
+                                      .interpolatedWith (traitColour (planet.trait), 0.22f);
+
+    switch (planet.trait)
+    {
+        case PlanetTrait::echo:     return identity.interpolatedWith (juce::Colour::fromRGB (8, 24, 42), 0.28f);
+        case PlanetTrait::storm:    return identity.interpolatedWith (juce::Colour::fromRGB (28, 8, 46), 0.24f);
+        case PlanetTrait::bloom:    return identity.interpolatedWith (juce::Colour::fromRGB (52, 18, 18), 0.18f);
+        case PlanetTrait::fracture: return identity.interpolatedWith (juce::Colour::fromRGB (18, 8, 22), 0.42f);
+        case PlanetTrait::mirror:   return identity.interpolatedWith (juce::Colour::fromRGB (18, 26, 58), 0.22f);
+        case PlanetTrait::none:     break;
+    }
+
+    return identity.interpolatedWith (juce::Colour::fromRGB (10, 10, 28), 0.38f);
+}
+
+juce::Colour fogColourForPlanet (const PlanetMetadata& planet)
+{
+    const auto buildTint = buildModeColour (planet.assignedBuildMode);
+    const auto perfTint = performanceModeColour (planet.assignedPerformanceMode);
+    auto fog = planet.accent.interpolatedWith (buildTint, 0.18f)
+                           .interpolatedWith (perfTint, 0.34f)
+                           .interpolatedWith (traitColour (planet.trait), 0.26f)
+                           .interpolatedWith (juce::Colours::white, 0.24f);
+
+    switch (planet.trait)
+    {
+        case PlanetTrait::echo:     return fog.brighter (0.12f);
+        case PlanetTrait::storm:    return fog.interpolatedWith (juce::Colour::fromRGB (255, 90, 220), 0.18f);
+        case PlanetTrait::bloom:    return fog.interpolatedWith (juce::Colour::fromRGB (255, 218, 164), 0.20f);
+        case PlanetTrait::fracture: return fog.interpolatedWith (juce::Colour::fromRGB (255, 86, 104), 0.24f);
+        case PlanetTrait::mirror:   return fog.interpolatedWith (juce::Colour::fromRGB (184, 208, 255), 0.22f);
+        case PlanetTrait::none:     return fog;
+    }
+
+    return fog;
+}
+
+int baseBlockTypeForBuildMode (PlanetBuildMode mode)
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric:        return 2;
+        case PlanetBuildMode::firstPerson:      return 3;
+        case PlanetBuildMode::cellularAutomata: return 4;
+        case PlanetBuildMode::tetris:           return 1;
+    }
+
+    return 1;
+}
+
+int accentBlockTypeForPerformanceMode (PlanetPerformanceMode mode)
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes:    return 3;
+        case PlanetPerformanceMode::trains:    return 1;
+        case PlanetPerformanceMode::ripple:    return 2;
+        case PlanetPerformanceMode::sequencer: return 4;
+        case PlanetPerformanceMode::tenori:    return 2;
+    }
+
+    return 2;
+}
+
+int floorBlockForPlanet (const PlanetMetadata& planet, int x, int y)
+{
+    const int baseBlock = baseBlockTypeForBuildMode (planet.assignedBuildMode);
+    const int accentBlock = accentBlockTypeForPerformanceMode (planet.assignedPerformanceMode);
+    const int hash = std::abs (((planet.seed * 131) ^ (x * 92821) ^ (y * 68917) ^ ((x + y) * 379))) & 0x7fffffff;
+
+    switch (planet.assignedBuildMode)
+    {
+        case PlanetBuildMode::isometric:
+            if (((x + y) % 5) == 0 || (std::abs (x - y) % 7) == 0)
+                return accentBlock;
+            return baseBlock;
+
+        case PlanetBuildMode::firstPerson:
+            if ((x % 4) == 0 || ((hash % 9) == 0))
+                return accentBlock;
+            return baseBlock;
+
+        case PlanetBuildMode::cellularAutomata:
+            if ((hash % 11) < 4 || (((x / 2) + (y / 2)) % 4) == 0)
+                return accentBlock;
+            return baseBlock;
+
+        case PlanetBuildMode::tetris:
+            if (((x + 2 * y) % 6) < 2 || (y % 4) == 0)
+                return accentBlock;
+            return baseBlock;
+    }
+
+    return baseBlock;
+}
+
+void setColumnHeight (PlanetSurfaceState& state, int x, int y, int topZ, int blockType)
+{
+    if (! juce::isPositiveAndBelow (x, state.width) || ! juce::isPositiveAndBelow (y, state.depth))
+        return;
+
+    const int clampedTop = juce::jlimit (1, PlanetSurfaceState::height - 1, topZ);
+    for (int z = 1; z <= clampedTop; ++z)
+        state.setBlock (x, y, z, blockType);
+}
+
+void addRectPlatform (PlanetSurfaceState& state, juce::Rectangle<int> rect, int topZ, int blockType)
+{
+    rect = rect.getIntersection ({ 0, 0, state.width, state.depth });
+    for (int y = rect.getY(); y < rect.getBottom(); ++y)
+        for (int x = rect.getX(); x < rect.getRight(); ++x)
+            setColumnHeight (state, x, y, topZ, blockType);
+}
+
+void addDisc (PlanetSurfaceState& state, juce::Point<int> centre, int radius, int topZ, int blockType)
+{
+    for (int y = juce::jmax (0, centre.y - radius); y <= juce::jmin (state.depth - 1, centre.y + radius); ++y)
+        for (int x = juce::jmax (0, centre.x - radius); x <= juce::jmin (state.width - 1, centre.x + radius); ++x)
+            if (((x - centre.x) * (x - centre.x) + (y - centre.y) * (y - centre.y)) <= radius * radius)
+                setColumnHeight (state, x, y, topZ, blockType);
+}
+
+void addBuildModeStarterTerrain (PlanetSurfaceState& state, const PlanetMetadata& planet)
+{
+    const int baseBlock = baseBlockTypeForBuildMode (planet.assignedBuildMode);
+    const int accentBlock = accentBlockTypeForPerformanceMode (planet.assignedPerformanceMode);
+    const int centreX = state.width / 2;
+    const int centreY = state.depth / 2;
+
+    switch (planet.assignedBuildMode)
+    {
+        case PlanetBuildMode::isometric:
+            addRectPlatform (state, { centreX - 2, centreY - 2, 5, 5 }, 1, baseBlock);
+            addRectPlatform (state, { centreX - 1, centreY - 1, 3, 3 }, 2, accentBlock);
+            addRectPlatform (state, { centreX, centreY, 1, 1 }, 3, accentBlock);
+            break;
+
+        case PlanetBuildMode::firstPerson:
+            addRectPlatform (state, { 1, centreY - 1, juce::jmax (4, state.width - 2), 2 }, 1, baseBlock);
+            addRectPlatform (state, { centreX - 1, 1, 2, juce::jmax (4, state.depth - 2) }, 1, accentBlock);
+            break;
+
+        case PlanetBuildMode::cellularAutomata:
+            addDisc (state, { centreX - 2, centreY - 1 }, 2, 1, baseBlock);
+            addDisc (state, { centreX + 2, centreY + 1 }, 2, 1, accentBlock);
+            addDisc (state, { centreX, centreY }, 1, 2, accentBlock);
+            break;
+
+        case PlanetBuildMode::tetris:
+            addRectPlatform (state, { centreX - 4, centreY - 1, 8, 2 }, 1, baseBlock);
+            addRectPlatform (state, { centreX - 1, centreY - 4, 2, 8 }, 1, accentBlock);
+            addRectPlatform (state, { centreX + 2, centreY + 2, 2, 2 }, 2, accentBlock);
+            break;
+    }
+}
+
+void addPerformanceStarterMotif (PlanetSurfaceState& state, const PlanetMetadata& planet)
+{
+    const int perfBlock = accentBlockTypeForPerformanceMode (planet.assignedPerformanceMode);
+    const int centreX = state.width / 2;
+    const int centreY = state.depth / 2;
+
+    switch (planet.assignedPerformanceMode)
+    {
+        case PlanetPerformanceMode::snakes:
+            for (int i = 0; i < juce::jmin (state.width - 2, state.depth - 2); ++i)
+                if ((i % 2) == 0)
+                    setColumnHeight (state, 1 + i, 1 + (i / 2) % juce::jmax (2, state.depth - 2), 2, perfBlock);
+            break;
+
+        case PlanetPerformanceMode::trains:
+            addRectPlatform (state, { 0, centreY, state.width, 1 }, 2, perfBlock);
+            if (state.depth >= 12)
+                addRectPlatform (state, { centreX, 0, 1, state.depth }, 1, perfBlock);
+            break;
+
+        case PlanetPerformanceMode::ripple:
+            addDisc (state, { centreX, centreY }, 1, 2, perfBlock);
+            for (int y = 0; y < state.depth; ++y)
+                for (int x = 0; x < state.width; ++x)
+                {
+                    const int d = std::abs (x - centreX) + std::abs (y - centreY);
+                    if (d == 4 || d == 7)
+                        setColumnHeight (state, x, y, 1, perfBlock);
+                }
+            break;
+
+        case PlanetPerformanceMode::sequencer:
+            addRectPlatform (state, { 0, juce::jmax (0, centreY - 1), state.width, 1 }, 2, perfBlock);
+            addRectPlatform (state, { 0, juce::jmin (state.depth - 1, centreY + 1), state.width, 1 }, 1, perfBlock);
+            break;
+
+        case PlanetPerformanceMode::tenori:
+            for (int x = 1; x < state.width; x += 3)
+                addRectPlatform (state, { x, 0, 1, state.depth }, ((x / 3) % 2) == 0 ? 1 : 2, perfBlock);
+            break;
+    }
+}
+
+void addTraitStarterMotif (PlanetSurfaceState& state, const PlanetMetadata& planet)
+{
+    const int buildBlock = baseBlockTypeForBuildMode (planet.assignedBuildMode);
+    const int perfBlock = accentBlockTypeForPerformanceMode (planet.assignedPerformanceMode);
+    const int traitBlock = 1 + ((planet.seed >> 3) & 3);
+    const int centreX = state.width / 2;
+    const int centreY = state.depth / 2;
+
+    switch (planet.trait)
+    {
+        case PlanetTrait::none:
+            break;
+
+        case PlanetTrait::echo:
+            addDisc (state, { centreX, centreY }, juce::jmax (2, state.width / 6), 2, traitBlock);
+            addDisc (state, { centreX, centreY }, juce::jmax (4, state.width / 4), 1, perfBlock);
+            break;
+
+        case PlanetTrait::storm:
+            for (int y = 1; y < state.depth - 1; y += 3)
+            {
+                const int shift = (y / 3) % 2;
+                for (int x = 1 + shift; x < state.width - 1; x += 5)
+                    setColumnHeight (state, x, y, 3, perfBlock);
+            }
+            break;
+
+        case PlanetTrait::bloom:
+            addDisc (state, { centreX, centreY }, juce::jmax (2, state.width / 7), 3, buildBlock);
+            addDisc (state, { centreX, centreY }, juce::jmax (3, state.width / 5), 2, perfBlock);
+            for (int i = 0; i < 4; ++i)
+            {
+                const int x = juce::jlimit (1, state.width - 2, centreX + ((i % 2 == 0) ? -3 : 3));
+                const int y = juce::jlimit (1, state.depth - 2, centreY + (i < 2 ? -3 : 3));
+                setColumnHeight (state, x, y, 2, traitBlock);
+            }
+            break;
+
+        case PlanetTrait::fracture:
+            for (int i = 1; i < juce::jmin (state.width, state.depth) - 1; ++i)
+            {
+                setColumnHeight (state, i, i, 2, traitBlock);
+                if (i + 1 < state.depth)
+                    setColumnHeight (state, i, i + 1, 1, perfBlock);
+            }
+            break;
+
+        case PlanetTrait::mirror:
+            for (int y = 1; y < state.depth - 1; y += 4)
+            {
+                const int left = juce::jmax (1, centreX - 3);
+                const int right = juce::jmin (state.width - 2, state.width - 1 - left);
+                setColumnHeight (state, left, y, 2, traitBlock);
+                setColumnHeight (state, right, y, 2, traitBlock);
+            }
+            break;
+    }
+}
+
 juce::String buildModeToString (PlanetBuildMode mode)
 {
     switch (mode)
@@ -253,6 +589,7 @@ void PersistenceManager::recordPlanetVisit (const StarSystemMetadata& system, co
             entry->setProperty ("atmosphere", planet.atmosphere);
             entry->setProperty ("assignedBuildMode", buildModeToString (planet.assignedBuildMode));
             entry->setProperty ("assignedPerformanceMode", performanceModeToString (planet.assignedPerformanceMode));
+            entry->setProperty ("trait", traitToString (planet.trait));
             entry->setProperty ("accent", planet.accent.toDisplayString (true));
             entry->setProperty ("lastVisitedUtc", nowIso);
             entry->setProperty ("visitCount", static_cast<int> (entry->getProperty ("visitCount")) + 1);
@@ -275,6 +612,7 @@ void PersistenceManager::recordPlanetVisit (const StarSystemMetadata& system, co
     entry->setProperty ("atmosphere", planet.atmosphere);
     entry->setProperty ("assignedBuildMode", buildModeToString (planet.assignedBuildMode));
     entry->setProperty ("assignedPerformanceMode", performanceModeToString (planet.assignedPerformanceMode));
+    entry->setProperty ("trait", traitToString (planet.trait));
     entry->setProperty ("accent", planet.accent.toDisplayString (true));
     entry->setProperty ("firstVisitedUtc", nowIso);
     entry->setProperty ("lastVisitedUtc", nowIso);
@@ -361,6 +699,7 @@ std::vector<VisitLogEntry> PersistenceManager::getVisitLog()
                 entry.atmosphere = static_cast<float> (double (object->getProperty ("atmosphere")));
                 entry.assignedBuildMode = buildModeFromString (object->getProperty ("assignedBuildMode").toString());
                 entry.assignedPerformanceMode = performanceModeFromString (object->getProperty ("assignedPerformanceMode").toString());
+                entry.trait = traitFromString (object->getProperty ("trait").toString());
                 entry.accent = juce::Colour::fromString (object->getProperty ("accent").toString());
                 entry.firstVisitedUtc = object->getProperty ("firstVisitedUtc").toString();
                 entry.lastVisitedUtc = object->getProperty ("lastVisitedUtc").toString();
@@ -717,6 +1056,7 @@ juce::var PersistenceManager::serialiseGalaxy (const GalaxyMetadata& galaxy)
             planetObject->setProperty ("atmosphere", planet->atmosphere);
             planetObject->setProperty ("assignedBuildMode", buildModeToString (planet->assignedBuildMode));
             planetObject->setProperty ("assignedPerformanceMode", performanceModeToString (planet->assignedPerformanceMode));
+            planetObject->setProperty ("trait", traitToString (planet->trait));
             planetObject->setProperty ("accent", planet->accent.toDisplayString (true));
             planets.add (juce::var (planetObject));
         }
@@ -775,6 +1115,7 @@ GalaxyMetadata PersistenceManager::deserialiseGalaxy (const juce::var& data)
                     planet->atmosphere = static_cast<float> (double (planetObject->getProperty ("atmosphere")));
                     planet->assignedBuildMode = buildModeFromString (planetObject->getProperty ("assignedBuildMode").toString());
                     planet->assignedPerformanceMode = performanceModeFromString (planetObject->getProperty ("assignedPerformanceMode").toString());
+                    planet->trait = traitFromString (planetObject->getProperty ("trait").toString());
                     planet->accent = juce::Colour::fromString (planetObject->getProperty ("accent").toString());
                 }
             }
@@ -819,6 +1160,13 @@ GalaxyMetadata GalaxyGenerator::generateGalaxy (int seed)
             planet->atmosphere = systemRandom.nextFloat();
             planet->assignedBuildMode = static_cast<PlanetBuildMode> (systemRandom.nextInt (4));
             planet->assignedPerformanceMode = static_cast<PlanetPerformanceMode> (systemRandom.nextInt (5));
+            const float traitRoll = systemRandom.nextFloat();
+            if (traitRoll < 0.40f)         planet->trait = PlanetTrait::none;
+            else if (traitRoll < 0.56f)    planet->trait = PlanetTrait::echo;
+            else if (traitRoll < 0.70f)    planet->trait = PlanetTrait::storm;
+            else if (traitRoll < 0.82f)    planet->trait = PlanetTrait::bloom;
+            else if (traitRoll < 0.91f)    planet->trait = PlanetTrait::fracture;
+            else                           planet->trait = PlanetTrait::mirror;
             planet->accent = colourFromSeed (planet->seed, 0.55f + 0.25f * planet->water, 0.65f + 0.15f * planet->energy);
         }
     }
@@ -841,14 +1189,18 @@ PlanetSurfaceState GalaxyGenerator::generateSurface (const PlanetMetadata& plane
         state.width = state.depth = 20;
     else
         state.width = state.depth = 32;
-    state.skyColour = planet.accent.interpolatedWith (juce::Colours::black, 0.35f);
-    state.fogColour = planet.accent.interpolatedWith (juce::Colours::white, 0.4f);
+    state.skyColour = skyColourForPlanet (planet);
+    state.fogColour = fogColourForPlanet (planet);
 
     for (int y = 0; y < state.depth; ++y)
     {
         for (int x = 0; x < state.width; ++x)
-            state.setBlock (x, y, 0, 1);
+            state.setBlock (x, y, 0, floorBlockForPlanet (planet, x, y));
     }
+
+    addBuildModeStarterTerrain (state, planet);
+    addPerformanceStarterMotif (state, planet);
+    addTraitStarterMotif (state, planet);
 
     return state;
 }

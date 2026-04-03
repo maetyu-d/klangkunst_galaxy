@@ -20,6 +20,16 @@ enum class PlanetPerformanceMode
     tenori
 };
 
+enum class PlanetTrait
+{
+    none,
+    echo,
+    storm,
+    bloom,
+    fracture,
+    mirror
+};
+
 struct PlanetMetadata
 {
     juce::String id;
@@ -32,6 +42,7 @@ struct PlanetMetadata
     float atmosphere = 0.0f;
     PlanetBuildMode assignedBuildMode = PlanetBuildMode::isometric;
     PlanetPerformanceMode assignedPerformanceMode = PlanetPerformanceMode::snakes;
+    PlanetTrait trait = PlanetTrait::none;
     juce::Colour accent = juce::Colours::white;
 };
 
@@ -66,6 +77,7 @@ struct VisitLogEntry
     float atmosphere = 0.0f;
     PlanetBuildMode assignedBuildMode = PlanetBuildMode::isometric;
     PlanetPerformanceMode assignedPerformanceMode = PlanetPerformanceMode::snakes;
+    PlanetTrait trait = PlanetTrait::none;
     juce::Colour accent = juce::Colours::white;
     juce::String firstVisitedUtc;
     juce::String lastVisitedUtc;

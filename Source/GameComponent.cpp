@@ -22,13 +22,13 @@ struct ReferenceBackdropTheme
 ReferenceBackdropTheme referenceTheme()
 {
     return {
-        juce::Colour::fromRGB (26, 10, 28),
-        juce::Colour::fromRGB (120, 58, 84),
-        juce::Colour::fromRGBA (255, 154, 92, 68),
-        juce::Colour::fromRGBA (255, 212, 124, 54),
-        juce::Colour::fromRGBA (255, 170, 116, 88),
-        juce::Colour::fromRGBA (255, 150, 104, 58),
-        juce::Colour::fromRGBA (255, 214, 170, 26)
+        juce::Colour::fromRGB (10, 4, 36),
+        juce::Colour::fromRGB (182, 46, 148),
+        juce::Colour::fromRGBA (255, 76, 188, 112),
+        juce::Colour::fromRGBA (76, 236, 255, 108),
+        juce::Colour::fromRGBA (255, 214, 84, 126),
+        juce::Colour::fromRGBA (118, 168, 255, 94),
+        juce::Colour::fromRGBA (255, 224, 252, 44)
     };
 }
 
@@ -52,21 +52,25 @@ void drawPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour light
     g.setColour (juce::Colour (0xee070b16));
     g.fillRoundedRectangle (panel, radius);
 
-    juce::ColourGradient wash (juce::Colour::fromRGBA (26, 44, 92, 238), panel.getX(), panel.getY(),
-                               juce::Colour::fromRGBA (12, 20, 44, 228), panel.getRight(), panel.getBottom(), false);
-    wash.addColour (0.38, juce::Colour::fromRGBA (34, 90, 180, 156));
-    wash.addColour (1.0, juce::Colour::fromRGBA (10, 12, 26, 236));
+    juce::ColourGradient wash (juce::Colour::fromRGBA (52, 34, 164, 244), panel.getX(), panel.getY(),
+                               juce::Colour::fromRGBA (20, 14, 74, 234), panel.getRight(), panel.getBottom(), false);
+    wash.addColour (0.16, juce::Colour::fromRGBA (64, 182, 255, 178));
+    wash.addColour (0.34, juce::Colour::fromRGBA (80, 255, 188, 134));
+    wash.addColour (0.54, juce::Colour::fromRGBA (214, 72, 255, 146));
+    wash.addColour (0.76, juce::Colour::fromRGBA (255, 104, 152, 136));
+    wash.addColour (0.90, juce::Colour::fromRGBA (255, 184, 72, 122));
+    wash.addColour (1.0, juce::Colour::fromRGBA (28, 14, 66, 238));
     g.setGradientFill (wash);
     g.fillRoundedRectangle (panel, radius);
 
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 58));
     g.fillRoundedRectangle (panel.reduced (3.0f, 3.0f).withHeight (panel.getHeight() * 0.24f), 7.0f);
-    g.setColour (withAlpha (lightColour, 0.14f));
+    g.setColour (withAlpha (lightColour.interpolatedWith (juce::Colour::fromRGB (255, 112, 214), 0.38f), 0.26f));
     g.fillRoundedRectangle (panel.reduced (3.0f).withTrimmedTop (panel.getHeight() * 0.42f), 8.0f);
 
-    g.setColour (juce::Colour::fromRGBA (118, 236, 255, 174));
+    g.setColour (juce::Colour::fromRGBA (164, 246, 255, 208));
     g.drawRoundedRectangle (panel.reduced (1.0f), radius, 1.3f);
-    g.setColour (juce::Colour::fromRGBA (22, 40, 78, 255));
+    g.setColour (juce::Colour::fromRGBA (92, 54, 168, 255));
     g.drawRoundedRectangle (panel.reduced (4.0f), radius - 3.0f, 1.0f);
 }
 
@@ -83,12 +87,68 @@ void drawVignette (juce::Graphics& g, juce::Rectangle<int> bounds)
 
 juce::Colour warmInk()
 {
-    return juce::Colour (0xfff2dfbf);
+    return juce::Colour (0xfffff1da);
 }
 
 juce::Colour mutedText()
 {
-    return juce::Colour (0xffbca98b);
+    return juce::Colour (0xffe2c8ff);
+}
+
+int baseSurfaceBlockForBuildMode (PlanetBuildMode mode)
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric:        return 2;
+        case PlanetBuildMode::firstPerson:      return 3;
+        case PlanetBuildMode::cellularAutomata: return 4;
+        case PlanetBuildMode::tetris:           return 1;
+    }
+
+    return 1;
+}
+
+int accentSurfaceBlockForPerformanceMode (PlanetPerformanceMode mode)
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes:    return 3;
+        case PlanetPerformanceMode::trains:    return 1;
+        case PlanetPerformanceMode::ripple:    return 2;
+        case PlanetPerformanceMode::sequencer: return 4;
+        case PlanetPerformanceMode::tenori:    return 2;
+    }
+
+    return 2;
+}
+
+int surfaceFloorBlockForPlanet (const PlanetMetadata& planet, int x, int y)
+{
+    const int baseBlock = baseSurfaceBlockForBuildMode (planet.assignedBuildMode);
+    const int accentBlock = accentSurfaceBlockForPerformanceMode (planet.assignedPerformanceMode);
+    const int hash = std::abs (((planet.seed * 131) ^ (x * 92821) ^ (y * 68917) ^ ((x + y) * 379))) & 0x7fffffff;
+
+    switch (planet.assignedBuildMode)
+    {
+        case PlanetBuildMode::isometric:
+            if (((x + y) % 5) == 0 || (std::abs (x - y) % 7) == 0)
+                return accentBlock;
+            return baseBlock;
+        case PlanetBuildMode::firstPerson:
+            if ((x % 4) == 0 || ((hash % 9) == 0))
+                return accentBlock;
+            return baseBlock;
+        case PlanetBuildMode::cellularAutomata:
+            if ((hash % 11) < 4 || (((x / 2) + (y / 2)) % 4) == 0)
+                return accentBlock;
+            return baseBlock;
+        case PlanetBuildMode::tetris:
+            if (((x + 2 * y) % 6) < 2 || (y % 4) == 0)
+                return accentBlock;
+            return baseBlock;
+    }
+
+    return baseBlock;
 }
 }
 
@@ -1648,8 +1708,37 @@ void GameComponent::setScene (Scene newScene)
 
 void GameComponent::moveSystemSelection (int delta)
 {
-    selectedSystemIndex = (selectedSystemIndex + delta + galaxy.systems.size()) % galaxy.systems.size();
+    if (galaxy.systems.isEmpty())
+        return;
+
+    ensureGalaxyDiscoveryState();
+    const int nextSystemIndex = (selectedSystemIndex + delta + galaxy.systems.size()) % galaxy.systems.size();
+    const float jumpFuelCost = getFuelCostForSystemJump (selectedSystemIndex, nextSystemIndex);
+    if (jumpFuelCost > galaxyFuel + 0.001f)
+    {
+        setGalaxyStatusMessage ("Insufficient fuel for that jump.");
+        repaint();
+        return;
+    }
+
+    galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel - jumpFuelCost);
+    selectedSystemIndex = nextSystemIndex;
     selectedPlanetIndex = 0;
+    const int warpDestination = getWarpDestinationForSystem (selectedSystemIndex);
+    bool warped = false;
+    juce::String warpDestinationName;
+    if (warpDestination >= 0 && warpDestination != selectedSystemIndex)
+    {
+        warped = true;
+        warpDestinationName = galaxy.systems.getUnchecked (warpDestination)->name;
+        selectedSystemIndex = warpDestination;
+        selectedPlanetIndex = 0;
+    }
+    revealGalaxyAroundSelection();
+    if (warped)
+        setGalaxyStatusMessage ("Entered a warp hole and jumped to " + warpDestinationName + " for free  -" + juce::String (jumpFuelCost, 1) + " fuel");
+    else
+        setGalaxyStatusMessage ("Jumped to " + getSelectedSystem().name + "  -" + juce::String (jumpFuelCost, 1) + " fuel");
     updateMusicState();
     queueAutosave();
     repaint();
@@ -1657,8 +1746,10 @@ void GameComponent::moveSystemSelection (int delta)
 
 void GameComponent::movePlanetSelection (int delta)
 {
+    ensureGalaxyDiscoveryState();
     const auto& system = getSelectedSystem();
     selectedPlanetIndex = (selectedPlanetIndex + delta + system.planets.size()) % system.planets.size();
+    revealGalaxyAroundSelection();
     updateMusicState();
     queueAutosave();
     repaint();
@@ -1666,8 +1757,10 @@ void GameComponent::movePlanetSelection (int delta)
 
 void GameComponent::landOnSelectedPlanet()
 {
+    revealGalaxyAroundSelection();
     ensureActivePlanetLoaded();
     persistence.recordPlanetVisit (getSelectedSystem(), getSelectedPlanet());
+    refuelFromPlanet (getSelectedPlanet());
     performanceMode = false;
     resetPerformanceState();
     applyPerformancePresetForPlanet();
@@ -1701,6 +1794,8 @@ void GameComponent::enterBuilder()
     automataBuildLayer = 1;
     automataHoverCell = {};
     hasMouseAnchor = false;
+    if (shouldRecenterIsometricOnEntry)
+        resetIsometricCameraForCurrentPlanet();
     updateIsometricCursorFromPosition (getBuilderGridArea().getCentre().toFloat());
     applyAssignedBuildModeForPlanet();
     queueAutosave();
@@ -1732,6 +1827,8 @@ void GameComponent::ensureActivePlanetLoaded()
         activePlanetState = std::make_unique<PlanetSurfaceState> (GalaxyGenerator::generateSurface (planet));
         persistence.savePlanet (*activePlanetState);
     }
+
+    shouldRecenterIsometricOnEntry = true;
 }
 
 void GameComponent::saveActivePlanet()
@@ -1787,6 +1884,7 @@ void GameComponent::updateMusicState()
     const auto& planet = getSelectedPlanet();
     const auto buildMode = planet.assignedBuildMode;
     const auto performanceModeForPlanet = planet.assignedPerformanceMode;
+    const auto trait = planet.trait;
     transportRate = 0.16f + 0.12f * planet.water + (currentScene == Scene::builder ? 0.08f : 0.0f);
 
     if (performanceMode && currentScene == Scene::builder)
@@ -1853,6 +1951,32 @@ void GameComponent::updateMusicState()
                 drumMode = DrumMode::railLine;
                 break;
         }
+    }
+
+    switch (trait)
+    {
+        case PlanetTrait::none:
+            break;
+        case PlanetTrait::echo:
+            if (currentScene != Scene::title)
+                synthEngine = SynthEngine::titleBloom;
+            break;
+        case PlanetTrait::storm:
+            drumMode = DrumMode::reactiveBreakbeat;
+            transportRate += 0.05f;
+            break;
+        case PlanetTrait::bloom:
+            if (currentScene != Scene::title && synthEngine != SynthEngine::guitarPluck)
+                synthEngine = SynthEngine::fmGlass;
+            break;
+        case PlanetTrait::fracture:
+            scaleType = ScaleType::chromatic;
+            transportRate += 0.03f;
+            break;
+        case PlanetTrait::mirror:
+            if (currentScene == Scene::landing || currentScene == Scene::builder)
+                synthEngine = SynthEngine::digitalV4;
+            break;
     }
 
     performanceSynthIndex = static_cast<int> (synthEngine);
@@ -2006,7 +2130,7 @@ juce::Point<float> GameComponent::getIsometricProjectionOffset (juce::Rectangle<
                                    (rotated.x + rotated.y) * tileHeight * 0.5f - z * verticalStep);
     };
 
-    const auto occupiedHeight = juce::jlimit (1, getSurfaceHeight(), getHighestOccupiedZ() + 2);
+    const auto occupiedHeight = juce::jlimit (1, getSurfaceHeight(), isometricCameraAnchorHeight);
 
     const std::array<juce::Point<float>, 8> corners {{
         projectRaw (minXCoord, minYCoord, 0),
@@ -2037,6 +2161,13 @@ juce::Point<float> GameComponent::getIsometricProjectionOffset (juce::Rectangle<
     targetCentre.y -= area.getHeight() * 0.075f;
     return { targetCentre.x - projectedCentre.x + isometricCamera.panX,
              targetCentre.y - projectedCentre.y + isometricCamera.panY };
+}
+
+void GameComponent::resetIsometricCameraForCurrentPlanet()
+{
+    isometricCamera = {};
+    isometricCameraAnchorHeight = juce::jlimit (1, getSurfaceHeight(), getHighestOccupiedZ() + 2);
+    shouldRecenterIsometricOnEntry = false;
 }
 
 juce::Point<float> GameComponent::projectIsometricPoint (int x, int y, int z, juce::Rectangle<float> area) const
@@ -2176,12 +2307,14 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
         const float velocity = juce::jlimit (0.20f, 0.56f, 0.28f + 0.025f * static_cast<float> (hitNotes.size()));
         synth.noteOn (1, focalNote, velocity);
         schedulePendingNoteOff (pendingNoteOffs, focalNote, 1.30f);
+        galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
 
         if ((beat % 8) == 0)
         {
             const int haloNote = quantizePerformanceMidi (focalNote + 12);
             synth.noteOn (1, haloNote, velocity * 0.10f);
             schedulePendingNoteOff (pendingNoteOffs, haloNote, 1.55f);
+            galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
         }
         triggered = 1;
         performanceLastImprovMidi = focalNote;
@@ -2194,6 +2327,7 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
             const float velocity = juce::jlimit (0.10f, 0.58f, 0.20f + 0.024f * static_cast<float> (i));
             synth.noteOn (1, midiNote, velocity);
             schedulePendingNoteOff (pendingNoteOffs, midiNote, 0.16f);
+            galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
             ++triggered;
         }
     }
@@ -2202,6 +2336,45 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
     performanceBeatEnergy = juce::jmin (1.0f, performanceBeatEnergy + 0.08f + 0.03f * static_cast<float> (triggered - 1));
     performanceFlashes.push_back ({ cell, juce::Colour::fromRGBA (120, 220, 255, 255),
                                     juce::jmin (1.0f, 0.70f + 0.12f * static_cast<float> (triggered - 1)), false });
+
+    const auto& planet = getSelectedPlanet();
+    if (planet.trait == PlanetTrait::mirror)
+    {
+        const juce::Point<int> mirrored { getSurfaceWidth() - 1 - cell.x, cell.y };
+        if (mirrored != cell
+            && juce::isPositiveAndBelow (mirrored.x, getSurfaceWidth())
+            && juce::isPositiveAndBelow (mirrored.y, getSurfaceDepth()))
+        {
+            std::vector<int> mirroredNotes;
+            for (int z = 1; z < getSurfaceHeight(); ++z)
+            {
+                if (activePlanetState->getBlock (mirrored.x, mirrored.y, z) == 0)
+                    continue;
+
+                mirroredNotes.push_back (getPerformanceMidiForHeight (z));
+                if (performanceNoteHeat.size() > static_cast<size_t> (z))
+                    ++performanceNoteHeat[static_cast<size_t> (z)];
+            }
+
+            std::sort (mirroredNotes.begin(), mirroredNotes.end());
+            mirroredNotes.erase (std::unique (mirroredNotes.begin(), mirroredNotes.end()), mirroredNotes.end());
+
+            if (! mirroredNotes.empty())
+            {
+                ++performanceTriggerHeat[static_cast<size_t> (mirrored.y * getSurfaceWidth() + mirrored.x)];
+                for (size_t i = 0; i < mirroredNotes.size(); ++i)
+                {
+                    const float velocity = juce::jlimit (0.08f, 0.34f, 0.12f + 0.018f * static_cast<float> (i));
+                    synth.noteOn (1, mirroredNotes[i], velocity);
+                    schedulePendingNoteOff (pendingNoteOffs, mirroredNotes[i], 0.22f);
+                    galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
+                }
+
+                recordPerformanceMovementCell (mirrored, 1);
+                performanceFlashes.push_back ({ mirrored, getPlanetTraitColour (planet.trait), 0.72f, true });
+            }
+        }
+    }
 }
 
 void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNotes)
@@ -2227,6 +2400,7 @@ void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNot
         const int finalMidi = juce::jlimit (0, 127, quantizePerformanceMidi (midiNote));
         synth.noteOn (1, finalMidi, juce::jlimit (0.0f, 1.0f, velocity));
         schedulePendingNoteOff (pendingNoteOffs, finalMidi, lengthSeconds);
+        galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
         performanceLastImprovMidi = finalMidi;
     };
 
@@ -2250,6 +2424,9 @@ void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNot
         if ((beat % 2) == 0)
             addImprovNote (chosen, (beat % 8) == 0 ? 0.18f : 0.13f, (beat % 8) == 0 ? 0.54f : 0.30f);
 
+        if (getSelectedPlanet().trait == PlanetTrait::echo && (beat % 4) == 2)
+            addImprovNote (chosen - 12, 0.09f, 0.48f);
+
         return;
     }
 
@@ -2265,8 +2442,8 @@ void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNot
     if (denseChord && performanceBeatEnergy > 0.28f && (performanceImprovCounter % 3) == 0)
         addImprovNote (passing, 0.12f, 0.14f);
 
-    if (synthEngine == SynthEngine::titleBloom)
-        addImprovNote (quantizePerformanceMidi (responseRoot + 12), 0.10f, 0.52f);
+    if (getSelectedPlanet().trait == PlanetTrait::echo && (beat % 4) == 1)
+        addImprovNote (quantizePerformanceMidi (responseRoot - 12), 0.08f, 0.32f);
 }
 
 void GameComponent::applyPerformanceEntryDefaults()
@@ -2429,6 +2606,37 @@ void GameComponent::applyPerformancePresetForPlanet()
     performanceLastImprovMidi = -1;
     performanceBeatMuted = planet.assignedPerformanceMode == PlanetPerformanceMode::ripple;
     snakeTriggerMode = triggerDist (rng) == 0 ? SnakeTriggerMode::headOnly : SnakeTriggerMode::wholeBody;
+
+    switch (planet.trait)
+    {
+        case PlanetTrait::none:
+            break;
+        case PlanetTrait::echo:
+            if (synthEngine == SynthEngine::chipPulse)
+                synthEngine = SynthEngine::titleBloom;
+            break;
+        case PlanetTrait::storm:
+            performanceBpm += 14.0;
+            performanceBeatMuted = false;
+            drumMode = DrumMode::reactiveBreakbeat;
+            break;
+        case PlanetTrait::bloom:
+            synthEngine = SynthEngine::titleBloom;
+            scaleType = ScaleType::major;
+            break;
+        case PlanetTrait::fracture:
+            performanceRegionMode = 0;
+            scaleType = ScaleType::chromatic;
+            performanceBpm += 8.0;
+            break;
+        case PlanetTrait::mirror:
+            performanceRegionMode = 2;
+            break;
+    }
+
+    performanceSynthIndex = static_cast<int> (synthEngine);
+    performanceDrumIndex = static_cast<int> (drumMode);
+    performanceScaleIndex = static_cast<int> (scaleType);
     beatStepAccumulator = 0.0;
     beatStepIndex = 0;
     beatBarIndex = 0;
@@ -2955,10 +3163,56 @@ juce::Colour GameComponent::getPlanetPerformanceModeColour (PlanetPerformanceMod
     return juce::Colour::fromRGB (255, 212, 102);
 }
 
+juce::String GameComponent::getPlanetTraitName (PlanetTrait trait) const
+{
+    switch (trait)
+    {
+        case PlanetTrait::none:     return "Common";
+        case PlanetTrait::echo:     return "Echo";
+        case PlanetTrait::storm:    return "Storm";
+        case PlanetTrait::bloom:    return "Bloom";
+        case PlanetTrait::fracture: return "Fracture";
+        case PlanetTrait::mirror:   return "Mirror";
+    }
+
+    return "Common";
+}
+
+juce::Colour GameComponent::getPlanetTraitColour (PlanetTrait trait) const
+{
+    switch (trait)
+    {
+        case PlanetTrait::none:     return juce::Colour::fromRGB (214, 224, 255);
+        case PlanetTrait::echo:     return juce::Colour::fromRGB (118, 242, 255);
+        case PlanetTrait::storm:    return juce::Colour::fromRGB (255, 118, 226);
+        case PlanetTrait::bloom:    return juce::Colour::fromRGB (255, 220, 128);
+        case PlanetTrait::fracture: return juce::Colour::fromRGB (255, 108, 122);
+        case PlanetTrait::mirror:   return juce::Colour::fromRGB (158, 188, 255);
+    }
+
+    return juce::Colour::fromRGB (214, 224, 255);
+}
+
+juce::String GameComponent::getPlanetTraitFlavour (PlanetTrait trait) const
+{
+    switch (trait)
+    {
+        case PlanetTrait::none:     return "A stable world signature with no rare anomaly";
+        case PlanetTrait::echo:     return "Notes trail into luminous afterimages and doubled replies";
+        case PlanetTrait::storm:    return "Charged skies drive hotter pulses, flashes, and denser impact";
+        case PlanetTrait::bloom:    return "Floral harmonic halos open wide around each gesture";
+        case PlanetTrait::fracture: return "Broken seams split terrain and stress the rhythm into shards";
+        case PlanetTrait::mirror:   return "Actions reflect across the world and answer from the far side";
+    }
+
+    return "A stable world signature with no rare anomaly";
+}
+
 juce::Colour GameComponent::getPlanetIdentityColour (const PlanetMetadata& planet) const
 {
     auto modeColour = getPlanetBuildModeColour (planet.assignedBuildMode)
                           .interpolatedWith (getPlanetPerformanceModeColour (planet.assignedPerformanceMode), 0.5f);
+    modeColour = modeColour.interpolatedWith (getPlanetTraitColour (planet.trait), 0.30f);
     return planet.accent.interpolatedWith (modeColour, 0.55f);
 }
 
@@ -2992,7 +3246,164 @@ juce::String GameComponent::getPlanetPerformanceModeFlavour (PlanetPerformanceMo
 juce::String GameComponent::getPlanetIdentitySummary (const PlanetMetadata& planet) const
 {
     return getPlanetBuildModeFlavour (planet.assignedBuildMode) + ". "
-         + getPlanetPerformanceModeFlavour (planet.assignedPerformanceMode) + ".";
+         + getPlanetPerformanceModeFlavour (planet.assignedPerformanceMode) + ". "
+         + getPlanetTraitFlavour (planet.trait) + ".";
+}
+
+void GameComponent::ensureGalaxyDiscoveryState()
+{
+    if (discoveredGalaxySystems.size() != static_cast<size_t> (galaxy.systems.size()))
+        discoveredGalaxySystems.assign (static_cast<size_t> (galaxy.systems.size()), false);
+
+    if (! galaxy.systems.isEmpty() && std::none_of (discoveredGalaxySystems.begin(), discoveredGalaxySystems.end(), [] (bool v) { return v; }))
+        revealGalaxyAroundSelection();
+}
+
+void GameComponent::revealGalaxyAroundSelection (float radius)
+{
+    if (discoveredGalaxySystems.size() != static_cast<size_t> (galaxy.systems.size()))
+        discoveredGalaxySystems.assign (static_cast<size_t> (galaxy.systems.size()), false);
+
+    if (! juce::isPositiveAndBelow (selectedSystemIndex, galaxy.systems.size()))
+        return;
+
+    const auto& origin = *galaxy.systems.getUnchecked (selectedSystemIndex);
+    discoveredGalaxySystems[static_cast<size_t> (selectedSystemIndex)] = true;
+
+    for (int i = 0; i < galaxy.systems.size(); ++i)
+    {
+        const auto& system = *galaxy.systems.getUnchecked (i);
+        const float dx = system.galaxyPosition.x - origin.galaxyPosition.x;
+        const float dy = system.galaxyPosition.y - origin.galaxyPosition.y;
+        const float distance = std::sqrt (dx * dx + dy * dy);
+        if (distance <= radius)
+            discoveredGalaxySystems[static_cast<size_t> (i)] = true;
+    }
+}
+
+bool GameComponent::isGalaxySystemDiscovered (int systemIndex) const
+{
+    return juce::isPositiveAndBelow (systemIndex, static_cast<int> (discoveredGalaxySystems.size()))
+           && discoveredGalaxySystems[static_cast<size_t> (systemIndex)];
+}
+
+float GameComponent::getFuelCostForSystemJump (int fromSystemIndex, int toSystemIndex) const
+{
+    if (! juce::isPositiveAndBelow (fromSystemIndex, galaxy.systems.size())
+        || ! juce::isPositiveAndBelow (toSystemIndex, galaxy.systems.size())
+        || fromSystemIndex == toSystemIndex)
+        return 0.0f;
+
+    const auto& from = *galaxy.systems.getUnchecked (fromSystemIndex);
+    const auto& to = *galaxy.systems.getUnchecked (toSystemIndex);
+    const float dx = to.galaxyPosition.x - from.galaxyPosition.x;
+    const float dy = to.galaxyPosition.y - from.galaxyPosition.y;
+    const float distance = std::sqrt (dx * dx + dy * dy);
+    return juce::jlimit (6.0f, 28.0f, 6.0f + distance * 58.0f);
+}
+
+void GameComponent::setGalaxyStatusMessage (juce::String message, int frames)
+{
+    galaxyStatusMessage = std::move (message);
+    galaxyStatusMessageFrames = frames;
+}
+
+void GameComponent::refuelFromPlanet (const PlanetMetadata& planet)
+{
+    const float refillAmount = juce::jlimit (8.0f, 28.0f, 8.0f + (planet.water + planet.energy) * 10.0f);
+    const float previousFuel = galaxyFuel;
+    galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + refillAmount);
+    const float gained = galaxyFuel - previousFuel;
+    if (gained > 0.05f)
+        setGalaxyStatusMessage ("Refuelled on " + planet.name + "  +" + juce::String (gained, 1) + " fuel");
+}
+
+std::vector<std::pair<int, int>> GameComponent::getGalaxyWarpLinks() const
+{
+    std::vector<std::pair<int, int>> links;
+    if (galaxy.systems.size() < 8)
+        return links;
+
+    juce::Random rng (galaxy.seed ^ 0x5A11A77E);
+    const int pairCount = juce::jlimit (1, 3, galaxy.systems.size() / 12);
+    std::vector<int> available;
+    available.reserve (static_cast<size_t> (galaxy.systems.size()));
+    for (int i = 0; i < galaxy.systems.size(); ++i)
+        available.push_back (i);
+
+    for (int pairIndex = 0; pairIndex < pairCount && available.size() >= 2; ++pairIndex)
+    {
+        const int firstAvailableIndex = rng.nextInt (static_cast<int> (available.size()));
+        const int firstSystem = available[static_cast<size_t> (firstAvailableIndex)];
+        available.erase (available.begin() + firstAvailableIndex);
+
+        int bestSystem = -1;
+        float bestDistance = -1.0f;
+        for (const int candidate : available)
+        {
+            const auto& a = *galaxy.systems.getUnchecked (firstSystem);
+            const auto& b = *galaxy.systems.getUnchecked (candidate);
+            const float dx = b.galaxyPosition.x - a.galaxyPosition.x;
+            const float dy = b.galaxyPosition.y - a.galaxyPosition.y;
+            const float distance = dx * dx + dy * dy;
+            if (distance > bestDistance)
+            {
+                bestDistance = distance;
+                bestSystem = candidate;
+            }
+        }
+
+        if (bestSystem < 0)
+            break;
+
+        available.erase (std::remove (available.begin(), available.end(), bestSystem), available.end());
+        links.emplace_back (firstSystem, bestSystem);
+    }
+
+    return links;
+}
+
+int GameComponent::getWarpDestinationForSystem (int systemIndex) const
+{
+    for (const auto& link : getGalaxyWarpLinks())
+    {
+        if (link.first == systemIndex)
+            return link.second;
+        if (link.second == systemIndex)
+            return link.first;
+    }
+
+    return -1;
+}
+
+juce::String GameComponent::getGalaxyRegionName (const StarSystemMetadata& system) const
+{
+    const float x = system.galaxyPosition.x;
+    const float y = system.galaxyPosition.y;
+
+    if (x < 0.33f && y < 0.33f) return "Aurora Verge";
+    if (x > 0.67f && y < 0.33f) return "Prism Reach";
+    if (x < 0.33f && y > 0.67f) return "Velvet Expanse";
+    if (x > 0.67f && y > 0.67f) return "Solar Fold";
+    if (y < 0.30f) return "Crown Drift";
+    if (y > 0.70f) return "Ember Deep";
+    if (x < 0.30f) return "West Lattice";
+    if (x > 0.70f) return "East Lattice";
+    return "Central Chorus";
+}
+
+juce::Colour GameComponent::getGalaxyRegionColour (const StarSystemMetadata& system) const
+{
+    const auto name = getGalaxyRegionName (system);
+    if (name == "Aurora Verge")  return juce::Colour::fromRGB (102, 236, 255);
+    if (name == "Prism Reach")   return juce::Colour::fromRGB (255, 122, 220);
+    if (name == "Velvet Expanse")return juce::Colour::fromRGB (255, 168, 98);
+    if (name == "Solar Fold")    return juce::Colour::fromRGB (255, 222, 108);
+    if (name == "Crown Drift")   return juce::Colour::fromRGB (184, 146, 255);
+    if (name == "Ember Deep")    return juce::Colour::fromRGB (255, 108, 142);
+    if (name == "West Lattice")  return juce::Colour::fromRGB (104, 224, 156);
+    if (name == "East Lattice")  return juce::Colour::fromRGB (110, 178, 255);
+    return juce::Colour::fromRGB (210, 238, 255);
 }
 
 void GameComponent::applyAssignedBuildModeForPlanet()
@@ -3494,9 +3905,10 @@ void GameComponent::clearPlanetSurface()
     if (activePlanetState == nullptr)
         return;
 
+    const auto& planet = getSelectedPlanet();
     for (int y = 0; y < getSurfaceDepth(); ++y)
         for (int x = 0; x < getSurfaceWidth(); ++x)
-            activePlanetState->setBlock (x, y, 0, 1);
+            activePlanetState->setBlock (x, y, 0, surfaceFloorBlockForPlanet (planet, x, y));
 
     for (int z = 1; z < getSurfaceHeight(); ++z)
         for (int y = 0; y < getSurfaceDepth(); ++y)
@@ -3743,8 +4155,12 @@ void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
         saveActivePlanet();
         galaxy = GalaxyGenerator::generateGalaxy (juce::Random::getSystemRandom().nextInt());
         persistence.clearWorkingData();
+        discoveredGalaxySystems.clear();
         selectedSystemIndex = 0;
         selectedPlanetIndex = 0;
+        galaxyFuel = galaxyFuelCapacity;
+        galaxyStatusMessage = "Voyage initialized. Tanks full.";
+        galaxyStatusMessageFrames = 180;
         activePlanetState.reset();
         builderViewMode = BuilderViewMode::isometric;
         topDownBuildMode = TopDownBuildMode::none;
@@ -3755,6 +4171,7 @@ void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
     titleResumeAvailable = true;
     hoveredTitleAction = TitleAction::none;
     closeTitleSlotOverlay();
+    revealGalaxyAroundSelection();
     queueAutosave();
     setScene (Scene::galaxy);
 }
@@ -3766,6 +4183,10 @@ juce::var GameComponent::serialiseVoyageSession() const
     object->setProperty ("resumeScene", static_cast<int> (resumeScene));
     object->setProperty ("selectedSystemIndex", selectedSystemIndex);
     object->setProperty ("selectedPlanetIndex", selectedPlanetIndex);
+    object->setProperty ("galaxyFuel", galaxyFuel);
+    object->setProperty ("galaxyFuelCapacity", galaxyFuelCapacity);
+    object->setProperty ("galaxyStatusMessage", galaxyStatusMessage);
+    object->setProperty ("galaxyStatusMessageFrames", galaxyStatusMessageFrames);
     object->setProperty ("titleResumeAvailable", titleResumeAvailable);
     object->setProperty ("builderViewMode", static_cast<int> (builderViewMode));
     object->setProperty ("topDownBuildMode", static_cast<int> (topDownBuildMode));
@@ -3798,6 +4219,12 @@ juce::var GameComponent::serialiseVoyageSession() const
     object->setProperty ("performanceKeyRoot", performanceKeyRoot);
     object->setProperty ("performanceImprovCounter", performanceImprovCounter);
     object->setProperty ("performanceLastImprovMidi", performanceLastImprovMidi);
+
+    juce::Array<juce::var> discoveredArray;
+    discoveredArray.ensureStorageAllocated (static_cast<int> (discoveredGalaxySystems.size()));
+    for (const auto discovered : discoveredGalaxySystems)
+        discoveredArray.add (discovered);
+    object->setProperty ("discoveredGalaxySystems", juce::var (discoveredArray));
 
     auto* fp = new juce::DynamicObject();
     fp->setProperty ("x", firstPersonState.x);
@@ -3955,6 +4382,14 @@ void GameComponent::restoreVoyageSession (const juce::var& sessionState)
                                             static_cast<int> (object->getProperty ("selectedPlanetIndex")));
     }
 
+    const float restoredFuelCapacity = static_cast<float> (double (object->getProperty ("galaxyFuelCapacity")));
+    galaxyFuelCapacity = restoredFuelCapacity > 1.0f ? restoredFuelCapacity : 100.0f;
+    galaxyFuel = static_cast<float> (double (object->getProperty ("galaxyFuel")));
+    if (galaxyFuel <= 0.0f)
+        galaxyFuel = galaxyFuelCapacity;
+    galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel);
+    galaxyStatusMessage = object->getProperty ("galaxyStatusMessage").toString();
+    galaxyStatusMessageFrames = static_cast<int> (object->getProperty ("galaxyStatusMessageFrames"));
     titleResumeAvailable = static_cast<bool> (object->getProperty ("titleResumeAvailable"));
     resumeScene = static_cast<Scene> (juce::jlimit (0, 3, static_cast<int> (object->getProperty ("resumeScene"))));
     builderViewMode = static_cast<BuilderViewMode> (juce::jlimit (0, 1, static_cast<int> (object->getProperty ("builderViewMode"))));
@@ -3993,6 +4428,15 @@ void GameComponent::restoreVoyageSession (const juce::var& sessionState)
     performanceSynthIndex = static_cast<int> (synthEngine);
     performanceDrumIndex = static_cast<int> (drumMode);
     performanceScaleIndex = static_cast<int> (scaleType);
+
+    discoveredGalaxySystems.clear();
+    if (const auto* discovered = object->getProperty ("discoveredGalaxySystems").getArray(); discovered != nullptr)
+    {
+        discoveredGalaxySystems.reserve (static_cast<size_t> (discovered->size()));
+        for (const auto& item : *discovered)
+            discoveredGalaxySystems.push_back (static_cast<bool> (item));
+    }
+    ensureGalaxyDiscoveryState();
 
     if (const auto* fp = object->getProperty ("firstPersonState").getDynamicObject(); fp != nullptr)
     {
@@ -4406,23 +4850,62 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
 {
     auto card = titleCardBounds (area.toFloat());
 
-    juce::ColourGradient sky (juce::Colour::fromRGB (14, 28, 92),
+    juce::ColourGradient sky (juce::Colour::fromRGB (6, 8, 22),
                               area.getCentreX(), static_cast<float> (area.getY()),
-                              juce::Colour::fromRGB (78, 20, 76),
+                              juce::Colour::fromRGB (28, 10, 44),
                               area.getCentreX(), static_cast<float> (area.getBottom()),
                               false);
-    sky.addColour (0.28, juce::Colour::fromRGB (28, 82, 172));
-    sky.addColour (0.58, juce::Colour::fromRGB (138, 42, 112));
-    sky.addColour (0.82, juce::Colour::fromRGB (255, 122, 94));
+    sky.addColour (0.16, juce::Colour::fromRGB (18, 42, 108));
+    sky.addColour (0.34, juce::Colour::fromRGB (22, 84, 154));
+    sky.addColour (0.54, juce::Colour::fromRGB (72, 28, 126));
+    sky.addColour (0.76, juce::Colour::fromRGB (112, 30, 106));
+    sky.addColour (0.94, juce::Colour::fromRGB (44, 14, 52));
     g.setGradientFill (sky);
-    g.fillRoundedRectangle (card.expanded (30.0f, 24.0f), 44.0f);
-    juce::ColourGradient skyGloss (juce::Colour::fromRGBA (198, 236, 255, 118),
-                                   card.getCentreX(), card.getY() - 12.0f,
-                                    juce::Colour::fromRGBA (255, 255, 255, 0),
-                                    card.getCentreX(), card.getY() + 150.0f,
-                                    false);
-    g.setGradientFill (skyGloss);
-    g.fillRoundedRectangle (card.expanded (30.0f, 24.0f).withHeight (174.0f), 44.0f);
+    g.fillAll();
+
+    fillGlow (g, juce::Rectangle<float> (520.0f, 340.0f).withCentre ({ card.getX() + 180.0f, card.getBottom() - 120.0f }),
+              juce::Colour::fromRGBA (28, 120, 255, 112), 0.18f);
+    fillGlow (g, juce::Rectangle<float> (460.0f, 300.0f).withCentre ({ card.getRight() - 220.0f, card.getY() + 146.0f }),
+              juce::Colour::fromRGBA (148, 84, 255, 104), 0.16f);
+    fillGlow (g, juce::Rectangle<float> (360.0f, 240.0f).withCentre ({ card.getCentreX() + 110.0f, card.getBottom() - 90.0f }),
+              juce::Colour::fromRGBA (255, 92, 172, 72), 0.10f);
+
+    juce::Path orbitalArc;
+    orbitalArc.addCentredArc (card.getCentreX() - 30.0f, card.getBottom() - 24.0f, card.getWidth() * 0.42f, card.getHeight() * 0.20f,
+                              0.0f, juce::MathConstants<float>::pi, juce::MathConstants<float>::twoPi, true);
+    orbitalArc.addCentredArc (card.getCentreX() + 80.0f, card.getBottom() + 12.0f, card.getWidth() * 0.36f, card.getHeight() * 0.16f,
+                              0.18f, juce::MathConstants<float>::pi, juce::MathConstants<float>::twoPi, true);
+    orbitalArc.addCentredArc (card.getCentreX() - 120.0f, card.getBottom() + 30.0f, card.getWidth() * 0.48f, card.getHeight() * 0.22f,
+                              -0.12f, juce::MathConstants<float>::pi, juce::MathConstants<float>::twoPi, true);
+    g.setColour (juce::Colour::fromRGBA (120, 196, 255, 28));
+    g.strokePath (orbitalArc, juce::PathStrokeType (1.2f));
+
+    juce::ColourGradient cardHalo (juce::Colour::fromRGBA (88, 190, 255, 78),
+                                   card.getCentreX(), card.getY() - 20.0f,
+                                   juce::Colour::fromRGBA (255, 255, 255, 0),
+                                   card.getCentreX(), card.getBottom() + 20.0f,
+                                   false);
+    g.setGradientFill (cardHalo);
+    g.fillRoundedRectangle (card.expanded (28.0f, 22.0f), 44.0f);
+
+    fillGlow (g, juce::Rectangle<float> (420.0f, 300.0f).withCentre ({ card.getX() + 220.0f, card.getBottom() - 120.0f }),
+              juce::Colour::fromRGBA (46, 166, 255, 150), 0.22f);
+    fillGlow (g, juce::Rectangle<float> (380.0f, 260.0f).withCentre ({ card.getRight() - 260.0f, card.getY() + 180.0f }),
+              juce::Colour::fromRGBA (196, 86, 255, 138), 0.18f);
+    fillGlow (g, juce::Rectangle<float> (320.0f, 220.0f).withCentre ({ card.getCentreX() + 80.0f, card.getBottom() - 80.0f }),
+              juce::Colour::fromRGBA (255, 120, 148, 126), 0.14f);
+
+    for (int i = 0; i < 140; ++i)
+    {
+        const float px = 24.0f + std::fmod (static_cast<float> (i * 137), static_cast<float> (area.getWidth() - 48));
+        const float py = 18.0f + std::fmod (static_cast<float> (i * 83), static_cast<float> (area.getHeight() - 36));
+        const float size = (i % 11 == 0) ? 2.8f : ((i % 5 == 0) ? 2.0f : 1.2f);
+        const auto star = (i % 7 == 0) ? juce::Colour::fromRGBA (255, 214, 128, 172)
+                                       : ((i % 3 == 0) ? juce::Colour::fromRGBA (132, 226, 255, 158)
+                                                       : juce::Colour::fromRGBA (255, 255, 255, 126));
+        g.setColour (star);
+        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ px, py }));
+    }
 
     auto drawNebula = [&] (juce::Point<float> centre, float cloudScale, juce::Colour tint)
     {
@@ -4431,9 +4914,11 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         g.fillEllipse (juce::Rectangle<float> (126.0f * cloudScale, 74.0f * cloudScale).withCentre (centre));
         g.fillEllipse (juce::Rectangle<float> (88.0f * cloudScale, 48.0f * cloudScale).withCentre ({ centre.x + 38.0f * cloudScale, centre.y + 5.0f * cloudScale }));
     };
-    drawNebula ({ card.getX() + 160.0f, card.getY() + 76.0f }, 1.0f, juce::Colour::fromRGB (92, 208, 255));
-    drawNebula ({ card.getRight() - 190.0f, card.getY() + 104.0f }, 0.96f, juce::Colour::fromRGB (255, 110, 198));
-    drawNebula ({ card.getCentreX() + 40.0f, card.getY() + 44.0f }, 0.84f, juce::Colour::fromRGB (255, 174, 82));
+    drawNebula ({ card.getX() + 160.0f, card.getY() + 76.0f }, 1.16f, juce::Colour::fromRGB (92, 240, 255));
+    drawNebula ({ card.getRight() - 190.0f, card.getY() + 104.0f }, 1.10f, juce::Colour::fromRGB (255, 92, 216));
+    drawNebula ({ card.getCentreX() - 40.0f, card.getBottom() - 118.0f }, 1.26f, juce::Colour::fromRGB (126, 255, 154));
+    drawNebula ({ card.getCentreX() + 40.0f, card.getY() + 44.0f }, 0.98f, juce::Colour::fromRGB (255, 174, 82));
+    drawNebula ({ card.getRight() - 120.0f, card.getBottom() - 96.0f }, 1.06f, juce::Colour::fromRGB (116, 182, 255));
 
     fillGlow (g, juce::Rectangle<float> (240.0f, 240.0f).withCentre ({ card.getRight() - 140.0f, card.getY() + 126.0f }),
               juce::Colour::fromRGB (255, 196, 92), 0.24f);
@@ -4442,19 +4927,21 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     g.setColour (juce::Colour::fromRGBA (255, 255, 255, 44));
     g.fillEllipse (juce::Rectangle<float> (70.0f, 70.0f).withCentre ({ card.getRight() - 168.0f, card.getY() + 92.0f }));
 
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 28));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
     g.fillRoundedRectangle (card.expanded (24.0f, 18.0f), 40.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
+    g.setColour (juce::Colour::fromRGBA (188, 232, 255, 88));
     g.fillRoundedRectangle (card.expanded (10.0f, 8.0f).withHeight (32.0f).translated (0.0f, 6.0f), 18.0f);
 
-    juce::ColourGradient fill (juce::Colour::fromRGBA (18, 30, 84, 232),
+    juce::ColourGradient fill (juce::Colour::fromRGBA (28, 30, 118, 236),
                                card.getCentreX(), card.getY(),
-                               juce::Colour::fromRGBA (20, 12, 40, 242),
+                               juce::Colour::fromRGBA (30, 14, 58, 244),
                                card.getCentreX(), card.getBottom(),
                                false);
-    fill.addColour (0.24, juce::Colour::fromRGBA (28, 88, 164, 228));
-    fill.addColour (0.56, juce::Colour::fromRGBA (82, 34, 122, 224));
-    fill.addColour (0.80, juce::Colour::fromRGBA (52, 18, 74, 220));
+    fill.addColour (0.14, juce::Colour::fromRGBA (24, 114, 255, 234));
+    fill.addColour (0.34, juce::Colour::fromRGBA (62, 184, 255, 228));
+    fill.addColour (0.56, juce::Colour::fromRGBA (124, 72, 255, 226));
+    fill.addColour (0.76, juce::Colour::fromRGBA (255, 62, 204, 220));
+    fill.addColour (0.92, juce::Colour::fromRGBA (255, 150, 88, 214));
     g.setGradientFill (fill);
     g.fillRoundedRectangle (card, 32.0f);
     g.setColour (juce::Colour::fromRGBA (112, 214, 255, 170));
@@ -4472,248 +4959,271 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     diagonalSheen.lineTo (card.getX() + 84.0f, card.getY() + 214.0f);
     diagonalSheen.lineTo (card.getX() + 12.0f, card.getY() + 214.0f);
     diagonalSheen.closeSubPath();
-    g.setColour (juce::Colour::fromRGBA (88, 122, 182, 8));
+    g.setColour (juce::Colour::fromRGBA (154, 210, 255, 12));
     g.fillPath (diagonalSheen);
 
-    auto inner = card.reduced (42.0f, 32.0f);
-    auto topRow = inner.removeFromTop (176.0f);
-    inner.removeFromTop (18.0f);
-    auto actionsRow = inner.removeFromTop (116.0f);
-    inner.removeFromTop (14.0f);
-    auto hintArea = inner.removeFromTop (28.0f);
+    auto inner = card.reduced (44.0f, 34.0f);
+    auto topRow = inner.removeFromTop (188.0f);
+    inner.removeFromTop (20.0f);
+    auto actionsRow = inner.removeFromTop (124.0f);
+    inner.removeFromTop (16.0f);
+    auto hintArea = inner.removeFromTop (26.0f);
 
-    auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.55f);
-    topRow.removeFromLeft (26.0f);
+    auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.53f);
+    topRow.removeFromLeft (30.0f);
     auto rightStory = topRow;
 
-    auto titleArea = leftHero.removeFromTop (98.0f);
-    leftHero.removeFromTop (8.0f);
-    auto subtitleArea = leftHero.removeFromTop (60.0f);
-    leftHero.removeFromTop (12.0f);
+    auto titleArea = leftHero.removeFromTop (106.0f);
+    leftHero.removeFromTop (10.0f);
+    auto subtitleArea = leftHero.removeFromTop (48.0f);
+    leftHero.removeFromTop (14.0f);
 
-    fillGlow (g, juce::Rectangle<float> (titleArea.getWidth() + 80.0f, titleArea.getHeight() + 36.0f)
+    fillGlow (g, juce::Rectangle<float> (titleArea.getWidth() + 120.0f, titleArea.getHeight() + 54.0f)
                   .withCentre ({ titleArea.getCentreX() + 14.0f, titleArea.getCentreY() + 4.0f }),
-              juce::Colour::fromRGB (255, 166, 112), 0.12f);
+              juce::Colour::fromRGB (255, 166, 112), 0.18f);
     auto titleShadow = titleArea.translated (0.0f, 5.0f);
     titleArea.removeFromTop (8.0f);
     auto titleShadowArea = titleArea.translated (0.0f, 6.0f);
-    auto titleMain = titleArea.removeFromTop (34.0f);
-    titleArea.removeFromTop (2.0f);
-    auto titleSub = titleArea.removeFromTop (42.0f);
+    auto titleMain = titleArea.removeFromTop (36.0f);
+    titleArea.removeFromTop (4.0f);
+    auto titleSub = titleArea.removeFromTop (46.0f);
+    g.setColour (juce::Colour::fromRGBA (168, 168, 176, 92));
+    g.fillRoundedRectangle (titleMain.withY (titleMain.getY() + 8.0f).withHeight (11.0f).withTrimmedRight (titleMain.getWidth() * 0.28f), 5.5f);
+    g.setColour (juce::Colour::fromRGBA (142, 142, 150, 118));
+    g.fillRoundedRectangle (titleSub.withY (titleSub.getBottom() - 8.0f).withHeight (8.0f).withTrimmedRight (titleSub.getWidth() * 0.42f), 4.0f);
     g.setColour (juce::Colour::fromRGBA (0, 0, 0, 156));
-    g.setFont (juce::FontOptions (50.0f, juce::Font::bold));
+    g.setFont (juce::FontOptions (52.0f, juce::Font::bold));
     g.drawText ("KlangKunst", titleShadowArea.removeFromTop (38.0f).toNearestInt(), juce::Justification::centredLeft);
     g.drawText ("Galaxy", titleShadowArea.removeFromTop (42.0f).toNearestInt(), juce::Justification::centredLeft);
-    g.setColour (juce::Colour::fromRGB (252, 244, 222));
-    g.setFont (juce::FontOptions (50.0f, juce::Font::bold));
+    g.setColour (juce::Colour::fromRGBA (252, 244, 222, 255));
+    g.setFont (juce::FontOptions (52.0f, juce::Font::bold));
     g.drawText ("KlangKunst", titleMain.toNearestInt(), juce::Justification::centredLeft);
-    juce::ColourGradient galaxyWord (juce::Colour::fromRGB (255, 186, 108),
+    juce::ColourGradient galaxyWord (juce::Colour::fromRGBA (255, 208, 74, 255),
                                      titleSub.getX(), titleSub.getY(),
-                                     juce::Colour::fromRGB (255, 108, 170),
+                                     juce::Colour::fromRGBA (255, 82, 220, 255),
                                      titleSub.getRight(), titleSub.getBottom(),
                                      false);
     g.setGradientFill (galaxyWord);
-    g.setFont (juce::FontOptions (58.0f, juce::Font::bold));
+    g.setFont (juce::FontOptions (60.0f, juce::Font::bold));
     g.drawText ("Galaxy", titleSub.toNearestInt(), juce::Justification::centredLeft);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 106));
-    g.fillRoundedRectangle (titleMain.withY (titleMain.getY() + 8.0f).withHeight (11.0f).withTrimmedRight (titleMain.getWidth() * 0.28f), 5.5f);
-    g.setColour (juce::Colour::fromRGBA (255, 192, 116, 182));
-    g.fillRoundedRectangle (titleSub.withY (titleSub.getBottom() - 8.0f).withHeight (8.0f).withTrimmedRight (titleSub.getWidth() * 0.42f), 4.0f);
 
     g.setColour (juce::Colour::fromRGBA (214, 232, 255, 220));
-    g.setFont (juce::FontOptions (15.5f));
+    g.setFont (juce::FontOptions (17.0f));
     g.drawFittedText ("Explore. Build. Play.",
                       subtitleArea.toNearestInt(),
                       juce::Justification::topLeft,
-                      3);
+                      2);
 
     juce::Path motifLine;
-    const float motifY = subtitleArea.getY() + 10.0f;
-    motifLine.startNewSubPath (subtitleArea.getRight() - 10.0f, motifY);
-    motifLine.lineTo (subtitleArea.getRight() + 170.0f, motifY);
+    const float motifY = subtitleArea.getY() + 12.0f;
+    motifLine.startNewSubPath (subtitleArea.getRight() - 12.0f, motifY);
+    motifLine.lineTo (subtitleArea.getRight() + 110.0f, motifY);
     g.setColour (juce::Colour::fromRGBA (160, 220, 255, 64));
-    g.strokePath (motifLine, juce::PathStrokeType (1.2f));
-    for (int i = 0; i < 3; ++i)
-    {
-        const auto x = subtitleArea.getRight() + 34.0f + static_cast<float> (i) * 78.0f;
-        const auto size = (i == 1) ? 14.0f : 10.0f;
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, static_cast<juce::uint8> (96 - i * 12)));
-        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, motifY }));
-    }
+    g.strokePath (motifLine, juce::PathStrokeType (1.0f));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 84));
+    g.fillEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre ({ subtitleArea.getRight() + 22.0f, motifY }));
 
-    g.setColour (juce::Colour::fromRGBA (24, 28, 74, 212));
+    g.setColour (juce::Colour::fromRGBA (20, 26, 72, 226));
     g.fillRoundedRectangle (rightStory, 22.0f);
-    g.setColour (juce::Colour::fromRGBA (126, 224, 255, 168));
-    g.drawRoundedRectangle (rightStory, 22.0f, 1.8f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
-    g.fillRoundedRectangle (rightStory.withHeight (18.0f).reduced (10.0f, 2.0f), 10.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 16));
-    g.fillRoundedRectangle (rightStory.reduced (10.0f, 12.0f).withHeight (44.0f), 18.0f);
+    g.setColour (juce::Colour::fromRGBA (132, 230, 255, 184));
+    g.drawRoundedRectangle (rightStory, 22.0f, 2.0f);
 
     auto storyInner = rightStory.reduced (18.0f, 18.0f);
-    auto boardArea = storyInner.removeFromTop (78.0f);
-    storyInner.removeFromTop (12.0f);
-    auto stepsArea = storyInner;
+    auto boardArea = storyInner;
 
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 44));
-    g.fillEllipse (boardArea.expanded (0.0f, 18.0f));
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
-    g.fillEllipse (boardArea.expanded (-20.0f, 0.0f).translated (0.0f, -4.0f));
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 24));
+    g.fillEllipse (boardArea.expanded (4.0f, 22.0f));
+    g.setColour (juce::Colour::fromRGBA (116, 176, 255, 18));
+    g.fillEllipse (boardArea.expanded (-20.0f, 4.0f).translated (0.0f, -8.0f));
 
-    auto boardRect = boardArea.withSizeKeepingCentre (186.0f, 96.0f);
-    juce::Path isoBoard;
-    const auto a = juce::Point<float> (boardRect.getCentreX(), boardRect.getY());
-    const auto b = juce::Point<float> (boardRect.getRight(), boardRect.getCentreY());
-    const auto c = juce::Point<float> (boardRect.getCentreX(), boardRect.getBottom());
-    const auto d = juce::Point<float> (boardRect.getX(), boardRect.getCentreY());
-    isoBoard.startNewSubPath (a);
-    isoBoard.lineTo (b);
-    isoBoard.lineTo (c);
-    isoBoard.lineTo (d);
-    isoBoard.closeSubPath();
-    g.setColour (juce::Colour::fromRGBA (34, 72, 156, 228));
-    g.fillPath (isoBoard);
-    g.setColour (juce::Colour::fromRGBA (140, 226, 255, 144));
-    g.strokePath (isoBoard, juce::PathStrokeType (2.0f));
-    juce::Path boardSheen;
-    boardSheen.startNewSubPath ({ boardRect.getCentreX(), boardRect.getY() + 6.0f });
-    boardSheen.lineTo ({ boardRect.getCentreX() + boardRect.getWidth() * 0.24f, boardRect.getCentreY() - 2.0f });
-    boardSheen.lineTo ({ boardRect.getCentreX() - boardRect.getWidth() * 0.10f, boardRect.getCentreY() - 2.0f });
-    boardSheen.lineTo ({ boardRect.getCentreX() - boardRect.getWidth() * 0.24f, boardRect.getY() + 18.0f });
-    boardSheen.closeSubPath();
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 58));
-    g.fillPath (boardSheen);
-    juce::Path boardGloss;
-    boardGloss.startNewSubPath (boardRect.getCentreX() - boardRect.getWidth() * 0.20f, boardRect.getY() + 16.0f);
-    boardGloss.lineTo (boardRect.getCentreX() + boardRect.getWidth() * 0.04f, boardRect.getY() + 16.0f);
-    boardGloss.lineTo (boardRect.getCentreX() - boardRect.getWidth() * 0.10f, boardRect.getCentreY() - 4.0f);
-    boardGloss.lineTo (boardRect.getCentreX() - boardRect.getWidth() * 0.28f, boardRect.getCentreY() - 4.0f);
-    boardGloss.closeSubPath();
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
-    g.fillPath (boardGloss);
-    for (int i = 1; i <= 3; ++i)
+    auto showcaseArea = boardArea.reduced (8.0f, 10.0f);
+    auto isoRect = showcaseArea.withSizeKeepingCentre (304.0f, 214.0f);
+    float showcaseOffsetX = 0.0f;
+    float showcaseOffsetY = 0.0f;
+
+    auto projectShowcase = [&] (float gx, float gy, float gz)
     {
-        const float t = static_cast<float> (i) / 4.0f;
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 36));
-        g.drawLine (juce::Line<float> ({ juce::jmap (t, d.x, a.x), juce::jmap (t, d.y, a.y) },
-                                       { juce::jmap (t, c.x, b.x), juce::jmap (t, c.y, b.y) }),
-                    1.0f);
-        g.drawLine (juce::Line<float> ({ juce::jmap (t, a.x, b.x), juce::jmap (t, a.y, b.y) },
-                                       { juce::jmap (t, d.x, c.x), juce::jmap (t, d.y, c.y) }),
-                    1.0f);
-    }
+        const float tileW = 24.0f;
+        const float tileH = 12.0f;
+        const float lift = 20.0f;
+        return juce::Point<float> (isoRect.getCentreX() + showcaseOffsetX + (gx - gy) * tileW * 0.5f,
+                                   isoRect.getY() + 54.0f + showcaseOffsetY + (gx + gy) * tileH * 0.5f - gz * lift);
+    };
 
-    auto drawMiniBlock = [&] (juce::Point<float> centre, juce::Colour colour)
+    auto drawShowcaseVoxel = [&] (int gx, int gy, int gz, juce::Colour colour)
     {
-        const float w = 24.0f;
-        const float h = 12.0f;
-        const float rise = 22.0f;
+        const auto aBottom = projectShowcase (static_cast<float> (gx),     static_cast<float> (gy),     static_cast<float> (gz));
+        const auto bBottom = projectShowcase (static_cast<float> (gx + 1), static_cast<float> (gy),     static_cast<float> (gz));
+        const auto cBottom = projectShowcase (static_cast<float> (gx + 1), static_cast<float> (gy + 1), static_cast<float> (gz));
+        const auto dBottom = projectShowcase (static_cast<float> (gx),     static_cast<float> (gy + 1), static_cast<float> (gz));
+        const auto aTop = projectShowcase (static_cast<float> (gx),     static_cast<float> (gy),     static_cast<float> (gz + 1));
+        const auto bTop = projectShowcase (static_cast<float> (gx + 1), static_cast<float> (gy),     static_cast<float> (gz + 1));
+        const auto cTop = projectShowcase (static_cast<float> (gx + 1), static_cast<float> (gy + 1), static_cast<float> (gz + 1));
+        const auto dTop = projectShowcase (static_cast<float> (gx),     static_cast<float> (gy + 1), static_cast<float> (gz + 1));
+
         juce::Path top;
-        top.startNewSubPath (centre.x, centre.y - rise);
-        top.lineTo (centre.x + w * 0.5f, centre.y - rise + h * 0.5f);
-        top.lineTo (centre.x, centre.y - rise + h);
-        top.lineTo (centre.x - w * 0.5f, centre.y - rise + h * 0.5f);
+        top.startNewSubPath (aTop);
+        top.lineTo (bTop);
+        top.lineTo (cTop);
+        top.lineTo (dTop);
         top.closeSubPath();
+
         juce::Path left;
-        left.startNewSubPath (centre.x - w * 0.5f, centre.y - rise + h * 0.5f);
-        left.lineTo (centre.x, centre.y - rise + h);
-        left.lineTo (centre.x, centre.y);
-        left.lineTo (centre.x - w * 0.5f, centre.y - h * 0.5f);
+        left.startNewSubPath (dTop);
+        left.lineTo (aTop);
+        left.lineTo (aBottom);
+        left.lineTo (dBottom);
         left.closeSubPath();
+
         juce::Path right;
-        right.startNewSubPath (centre.x + w * 0.5f, centre.y - rise + h * 0.5f);
-        right.lineTo (centre.x, centre.y - rise + h);
-        right.lineTo (centre.x, centre.y);
-        right.lineTo (centre.x + w * 0.5f, centre.y - h * 0.5f);
+        right.startNewSubPath (bTop);
+        right.lineTo (cTop);
+        right.lineTo (cBottom);
+        right.lineTo (bBottom);
         right.closeSubPath();
+
+        g.setColour (colour.withMultipliedBrightness (0.64f));
+        g.fillPath (right);
+        g.setColour (colour.withMultipliedBrightness (0.50f));
+        g.fillPath (left);
         g.setColour (colour.withMultipliedBrightness (1.12f));
         g.fillPath (top);
-        g.setColour (colour.withMultipliedBrightness (0.86f));
-        g.fillPath (left);
-        g.setColour (colour.withMultipliedBrightness (0.72f));
-        g.fillPath (right);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 46));
         g.strokePath (top, juce::PathStrokeType (1.0f));
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 72));
-        g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre ({ centre.x - 3.0f, centre.y - rise + 7.0f }));
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
-        g.fillRoundedRectangle (juce::Rectangle<float> (w * 0.28f, 4.0f).withCentre ({ centre.x - 2.0f, centre.y - rise + 8.0f }), 2.0f);
+        g.setColour (juce::Colour::fromRGBA (18, 22, 44, 116));
+        g.strokePath (left, juce::PathStrokeType (0.8f));
+        g.strokePath (right, juce::PathStrokeType (0.8f));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 82));
+        g.fillEllipse (juce::Rectangle<float> (4.0f, 4.0f).withCentre ({ aTop.x + 6.0f, aTop.y + 5.0f }));
     };
-    drawMiniBlock ({ boardRect.getCentreX() - 42.0f, boardRect.getCentreY() + 24.0f }, juce::Colour::fromRGB (255, 214, 84));
-    drawMiniBlock ({ boardRect.getCentreX() - 8.0f, boardRect.getCentreY() + 4.0f }, juce::Colour::fromRGB (255, 96, 92));
-    drawMiniBlock ({ boardRect.getCentreX() + 28.0f, boardRect.getCentreY() + 20.0f }, juce::Colour::fromRGB (116, 224, 110));
-    drawMiniBlock ({ boardRect.getCentreX() + 58.0f, boardRect.getCentreY() - 8.0f }, juce::Colour::fromRGB (92, 198, 255));
 
-    auto legendArea = juce::Rectangle<float> (boardArea.getX() + 12.0f, boardArea.getBottom() + 8.0f, boardArea.getWidth() - 24.0f, 54.0f);
-    const float legendGap = 8.0f;
-    const float legendRowHeight = (legendArea.getHeight() - legendGap * 2.0f) / 3.0f;
-    const std::array<juce::Colour, 3> legendColours {
-        juce::Colour::fromRGB (255, 120, 168),
-        juce::Colour::fromRGB (255, 196, 92),
-        juce::Colour::fromRGB (92, 214, 255)
-    };
-    for (int i = 0; i < 3; ++i)
+    struct ShowcaseVoxel { int x, y, z; juce::Colour colour; };
+    std::vector<ShowcaseVoxel> showcaseVoxels;
+    auto addTower = [&] (int x, int y, int h, juce::Colour colour)
     {
-        auto row = legendArea.removeFromTop (legendRowHeight);
-        if (i < 2)
-            legendArea.removeFromTop (legendGap);
+        for (int z = 0; z < h; ++z)
+            showcaseVoxels.push_back ({ x, y, z, colour });
+    };
 
-        g.setColour (juce::Colour::fromRGBA (18, 24, 58, 188));
-        g.fillRoundedRectangle (row, row.getHeight() * 0.5f);
-        g.setColour (juce::Colour::fromRGBA (112, 214, 255, 110));
-        g.drawRoundedRectangle (row, row.getHeight() * 0.5f, 1.0f);
+    const auto gold = juce::Colour::fromRGB (255, 214, 84);
+    const auto coral = juce::Colour::fromRGB (255, 96, 92);
+    const auto aqua = juce::Colour::fromRGB (92, 214, 255);
+    const auto jade = juce::Colour::fromRGB (116, 224, 110);
+    const auto violet = juce::Colour::fromRGB (196, 124, 255);
+    const auto tangerine = juce::Colour::fromRGB (255, 152, 64);
 
-        auto badge = row.removeFromLeft (28.0f).reduced (2.0f);
-        g.setColour (legendColours[static_cast<size_t> (i)].withAlpha (0.92f));
-        g.fillEllipse (badge);
-        g.setColour (juce::Colours::white.withAlpha (0.84f));
-        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-        g.drawText (juce::String (i + 1), badge.toNearestInt(), juce::Justification::centred);
+    for (int x = 1; x < 7; ++x)
+        addTower (x, 6, 1, gold);
+    for (int y = 2; y < 7; ++y)
+        addTower (1, y, 1, aqua);
+    addTower (2, 5, 3, aqua);
+    addTower (3, 5, 2, aqua);
+    addTower (4, 5, 2, aqua);
+    addTower (5, 5, 4, coral);
+    addTower (5, 4, 3, coral);
+    addTower (6, 4, 2, coral);
+    addTower (3, 3, 5, violet);
+    addTower (4, 3, 4, violet);
+    addTower (3, 2, 3, violet);
+    addTower (5, 2, 5, jade);
+    addTower (6, 2, 4, jade);
+    addTower (6, 1, 3, jade);
+    addTower (2, 2, 2, tangerine);
+    addTower (2, 1, 3, tangerine);
+    addTower (4, 1, 2, gold);
+    addTower (5, 1, 2, gold);
+    addTower (6, 6, 2, coral);
+    addTower (7, 5, 3, violet);
 
-        row.removeFromLeft (8.0f);
-        auto barBounds = row.reduced (0.0f, 3.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 12));
-        g.fillRoundedRectangle (barBounds.withHeight (8.0f), 4.0f);
-        const auto fillWidth = barBounds.getWidth() * (0.18f + 0.22f * static_cast<float> (i));
-        g.setColour (legendColours[static_cast<size_t> (i)].withAlpha (0.68f));
-        g.fillRoundedRectangle (barBounds.withWidth (fillWidth).withHeight (8.0f), 4.0f);
+    std::sort (showcaseVoxels.begin(), showcaseVoxels.end(),
+               [] (const ShowcaseVoxel& a, const ShowcaseVoxel& b)
+               {
+                   if ((a.x + a.y + a.z) != (b.x + b.y + b.z))
+                       return (a.x + a.y + a.z) < (b.x + b.y + b.z);
+                   if ((a.y + a.x) != (b.y + b.x))
+                       return (a.y + a.x) < (b.y + b.x);
+                    return a.z < b.z;
+                });
+
+    {
+        std::vector<juce::Point<float>> showcasePoints;
+        auto addProjected = [&] (float x, float y, float z)
+        {
+            showcasePoints.push_back (projectShowcase (x, y, z));
+        };
+
+        addProjected (0.0f, 0.0f, 0.0f);
+        addProjected (8.0f, 0.0f, 0.0f);
+        addProjected (8.0f, 8.0f, 0.0f);
+        addProjected (0.0f, 8.0f, 0.0f);
+
+        for (const auto& voxel : showcaseVoxels)
+        {
+            addProjected (static_cast<float> (voxel.x),     static_cast<float> (voxel.y),     static_cast<float> (voxel.z));
+            addProjected (static_cast<float> (voxel.x + 1), static_cast<float> (voxel.y),     static_cast<float> (voxel.z));
+            addProjected (static_cast<float> (voxel.x + 1), static_cast<float> (voxel.y + 1), static_cast<float> (voxel.z));
+            addProjected (static_cast<float> (voxel.x),     static_cast<float> (voxel.y + 1), static_cast<float> (voxel.z));
+            addProjected (static_cast<float> (voxel.x),     static_cast<float> (voxel.y),     static_cast<float> (voxel.z + 1));
+            addProjected (static_cast<float> (voxel.x + 1), static_cast<float> (voxel.y),     static_cast<float> (voxel.z + 1));
+            addProjected (static_cast<float> (voxel.x + 1), static_cast<float> (voxel.y + 1), static_cast<float> (voxel.z + 1));
+            addProjected (static_cast<float> (voxel.x),     static_cast<float> (voxel.y + 1), static_cast<float> (voxel.z + 1));
+        }
+
+        float minX = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float minY = std::numeric_limits<float>::max();
+        float maxY = std::numeric_limits<float>::lowest();
+        for (const auto& pt : showcasePoints)
+        {
+            minX = std::min (minX, pt.x);
+            maxX = std::max (maxX, pt.x);
+            minY = std::min (minY, pt.y);
+            maxY = std::max (maxY, pt.y);
+        }
+
+        const float targetX = showcaseArea.getCentreX();
+        const float targetY = showcaseArea.getCentreY() + 4.0f;
+        showcaseOffsetX = targetX - (minX + maxX) * 0.5f;
+        showcaseOffsetY = targetY - (minY + maxY) * 0.5f;
     }
 
-    auto drawStep = [&] (juce::Rectangle<float> bounds, const juce::String& num, const juce::String& label, const juce::String& desc)
-    {
-        g.setColour (juce::Colour::fromRGBA (18, 26, 64, 224));
-        g.fillRoundedRectangle (bounds, 16.0f);
-        g.setColour (juce::Colour::fromRGBA (114, 214, 255, 112));
-        g.drawRoundedRectangle (bounds, 16.0f, 1.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
-        g.fillRoundedRectangle (bounds.reduced (8.0f, 6.0f).withHeight (16.0f), 8.0f);
-        auto numBubble = bounds.removeFromLeft (44.0f).reduced (4.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 124, 124, 220));
-        g.fillRoundedRectangle (numBubble, 12.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 214, 150, 100));
-        g.drawRoundedRectangle (numBubble, 12.0f, 1.2f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 88));
-        g.fillRoundedRectangle (numBubble.reduced (5.0f, 4.0f).withHeight (8.0f), 6.0f);
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (16.0f));
-        g.drawText (num, numBubble.toNearestInt(), juce::Justification::centred);
-        auto textArea = bounds.reduced (12.0f, 8.0f);
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (16.0f));
-        g.drawText (label, textArea.removeFromTop (20.0f).toNearestInt(), juce::Justification::centredLeft);
-        g.setColour (juce::Colour::fromRGBA (210, 228, 255, 202));
-        g.setFont (juce::FontOptions (13.5f));
-        g.drawFittedText (desc, textArea.toNearestInt(), juce::Justification::topLeft, 2);
-    };
-    const float stepGap = 10.0f;
-    const float stepHeight = (stepsArea.getHeight() - stepGap * 2.0f) / 3.0f;
-    drawStep (stepsArea.removeFromTop (stepHeight), "1", "Chart the galaxy", "Drift between seeded constellations and pick a system from a living cosmic atlas.");
-    stepsArea.removeFromTop (stepGap);
-    drawStep (stepsArea.removeFromTop (stepHeight), "2", "Descend to a planet", "Drop from the overture of space into a world that materialises only when you commit to land.");
-    stepsArea.removeFromTop (stepGap);
-    drawStep (stepsArea.removeFromTop (stepHeight), "3", "Build the world", "Shape the silent surface into a persistent musical landscape and hear it answer back.");
+    g.saveState();
+    g.reduceClipRegion (rightStory.toNearestInt().reduced (4));
+    fillGlow (g, juce::Rectangle<float> (isoRect.getCentreX() + showcaseOffsetX - 156.0f, isoRect.getY() + showcaseOffsetY - 18.0f, 312.0f, 156.0f),
+              juce::Colour::fromRGBA (132, 224, 255, 196), 0.16f);
+    fillGlow (g, juce::Rectangle<float> (isoRect.getCentreX() + showcaseOffsetX - 112.0f, isoRect.getY() + showcaseOffsetY + 32.0f, 232.0f, 146.0f),
+              juce::Colour::fromRGBA (255, 96, 212, 176), 0.13f);
 
-    const float buttonGap = 18.0f;
+    juce::Path floorPlane;
+    const auto floorA = projectShowcase (0.0f, 0.0f, 0.0f);
+    const auto floorB = projectShowcase (8.0f, 0.0f, 0.0f);
+    const auto floorC = projectShowcase (8.0f, 8.0f, 0.0f);
+    const auto floorD = projectShowcase (0.0f, 8.0f, 0.0f);
+    floorPlane.startNewSubPath (floorA);
+    floorPlane.lineTo (floorB);
+    floorPlane.lineTo (floorC);
+    floorPlane.lineTo (floorD);
+    floorPlane.closeSubPath();
+    g.setColour (juce::Colour::fromRGBA (26, 56, 130, 236));
+    g.fillPath (floorPlane);
+    g.setColour (juce::Colour::fromRGBA (138, 228, 255, 120));
+    g.strokePath (floorPlane, juce::PathStrokeType (1.8f));
+
+    juce::Path floorGrid;
+    for (int i = 1; i < 8; ++i)
+    {
+        floorGrid.startNewSubPath (projectShowcase (static_cast<float> (i), 0.0f, 0.0f));
+        floorGrid.lineTo (projectShowcase (static_cast<float> (i), 8.0f, 0.0f));
+        floorGrid.startNewSubPath (projectShowcase (0.0f, static_cast<float> (i), 0.0f));
+        floorGrid.lineTo (projectShowcase (8.0f, static_cast<float> (i), 0.0f));
+    }
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 32));
+    g.strokePath (floorGrid, juce::PathStrokeType (1.0f));
+
+    for (const auto& voxel : showcaseVoxels)
+        drawShowcaseVoxel (voxel.x, voxel.y, voxel.z, voxel.colour);
+    g.restoreState();
+    const float buttonGap = 20.0f;
     const float buttonWidth = (actionsRow.getWidth() - buttonGap * 3.0f) / 4.0f;
     const std::array<TitleAction, 4> actions {
         TitleAction::resumeVoyage,
@@ -4735,12 +5245,10 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         const bool enabled = isTitleActionEnabled (actions[i]);
         const bool hovered = enabled && hoveredTitleAction == actions[i];
         const float pulse = hovered ? (0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.006))) : 0.0f;
-        const float lift = hovered ? -4.0f : 0.0f;
+        const float lift = hovered ? -5.0f : 0.0f;
         button = button.translated (0.0f, lift);
-        g.setColour (juce::Colour::fromRGBA (0, 0, 0, hovered ? 118 : (enabled ? 74 : 52)));
-        g.fillRoundedRectangle (button.translated (0.0f, 6.0f), 22.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 38 : (enabled ? 18 : 10)));
-        g.fillRoundedRectangle (button.translated (0.0f, 2.0f), 22.0f);
+        g.setColour (juce::Colour::fromRGBA (0, 0, 0, hovered ? 120 : (enabled ? 76 : 56)));
+        g.fillRoundedRectangle (button.translated (0.0f, 7.0f), 20.0f);
         const auto topColour = [&]() -> juce::Colour
         {
             if (! enabled)
@@ -4776,73 +5284,52 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
                                          button.getCentreX(), button.getBottom(),
                                          false);
         g.setGradientFill (buttonFill);
-        g.fillRoundedRectangle (button, 22.0f);
+        g.fillRoundedRectangle (button, 20.0f);
         g.setColour (! enabled ? juce::Colour::fromRGBA (172, 178, 194, 92)
-                               : (hovered ? juce::Colour::fromRGBA (255, 222, 150, static_cast<uint8_t> (184 + 34 * pulse))
-                                          : juce::Colour::fromRGBA (110, 214, 255, 138)));
-        g.drawRoundedRectangle (button, 22.0f, hovered ? 2.6f : 1.4f);
+                               : (hovered ? juce::Colour::fromRGBA (255, 222, 150, static_cast<uint8_t> (194 + 34 * pulse))
+                                          : juce::Colour::fromRGBA (132, 224, 255, 156)));
+        g.drawRoundedRectangle (button, 20.0f, hovered ? 2.6f : 1.4f);
         g.setColour (! enabled ? juce::Colour::fromRGBA (255, 255, 255, 12)
                                : (hovered ? juce::Colour::fromRGBA (255, 176, 112, static_cast<uint8_t> (40 + 28 * pulse))
-                                          : juce::Colour::fromRGBA (92, 190, 255, 30)));
-        g.fillRoundedRectangle (button.reduced (5.0f, 5.0f), 18.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 78 : (enabled ? 52 : 26)));
-        g.fillRoundedRectangle (button.withHeight (18.0f).reduced (12.0f, 4.0f), 10.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 122 : (enabled ? 84 : 40)));
-        g.fillRoundedRectangle (button.reduced (16.0f, 12.0f).withHeight (14.0f), 7.0f);
-        juce::Path buttonSweep;
-        buttonSweep.startNewSubPath (button.getX() + 18.0f, button.getY() + 20.0f);
-        buttonSweep.lineTo (button.getX() + button.getWidth() * 0.58f, button.getY() + 20.0f);
-        buttonSweep.lineTo (button.getX() + button.getWidth() * 0.38f, button.getY() + button.getHeight() - 20.0f);
-        buttonSweep.lineTo (button.getX() + 8.0f, button.getY() + button.getHeight() - 20.0f);
-        buttonSweep.closeSubPath();
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 56 : (enabled ? 34 : 16)));
-        g.fillPath (buttonSweep);
-        auto buttonInner = button.reduced (20.0f, 14.0f);
-        auto topStrip = buttonInner.removeFromTop (22.0f);
-        auto actionTag = topStrip.removeFromLeft (56.0f);
-        g.setColour (! enabled ? juce::Colour::fromRGBA (146, 152, 166, 46)
-                               : (hovered ? juce::Colour::fromRGBA (255, 210, 140, 118)
-                                          : juce::Colour::fromRGBA (112, 214, 255, 78)));
-        g.fillRoundedRectangle (actionTag, 11.0f);
-        g.setColour (enabled ? juce::Colours::white : juce::Colours::white.withAlpha (0.52f));
-        g.setFont (juce::FontOptions (12.5f));
-        g.drawText ("STEP", actionTag.toNearestInt(), juce::Justification::centred);
-        buttonInner.removeFromTop (10.0f);
+                                          : juce::Colour::fromRGBA (112, 214, 255, 26)));
+        g.fillRoundedRectangle (button.reduced (5.0f, 5.0f), 16.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 70 : (enabled ? 42 : 18)));
+        g.fillRoundedRectangle (button.reduced (16.0f, 10.0f).withHeight (12.0f), 6.0f);
+        auto buttonInner = button.reduced (22.0f, 18.0f);
         g.setColour (enabled ? juce::Colours::white : juce::Colours::white.withAlpha (0.55f));
-        g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-        g.drawText (titleActionLabel (actions[i]), buttonInner.removeFromTop (30.0f).toNearestInt(), juce::Justification::centredLeft);
-        buttonInner.removeFromTop (4.0f);
+        g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
+        g.drawText (titleActionLabel (actions[i]), buttonInner.removeFromTop (34.0f).toNearestInt(), juce::Justification::centredLeft);
+        buttonInner.removeFromTop (8.0f);
         g.setColour (enabled ? juce::Colour::fromRGBA (216, 232, 255, 218)
                              : juce::Colour::fromRGBA (188, 196, 210, 138));
         g.setFont (juce::FontOptions (14.0f));
         g.drawFittedText (captions[i],
-                          buttonInner.toNearestInt(), juce::Justification::topLeft, 3);
+                          buttonInner.toNearestInt(), juce::Justification::topLeft, 2);
     }
 
-    auto footerCloud = hintArea.withTrimmedTop (2.0f).reduced (56.0f, 0.0f);
-    g.setColour (juce::Colour::fromRGBA (18, 24, 58, 214));
-    g.fillRoundedRectangle (footerCloud, 14.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 20));
-    g.fillRoundedRectangle (footerCloud.withHeight (10.0f).reduced (14.0f, 1.0f), 8.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
-    g.fillRoundedRectangle (footerCloud.reduced (18.0f, 6.0f).withHeight (8.0f), 6.0f);
-    g.setColour (juce::Colour::fromRGBA (216, 232, 255, 220));
-    g.setFont (juce::FontOptions (13.0f));
-    g.drawText ("Resume returns to your voyage   New starts fresh   Load restores a .drd slot   Save writes the current voyage",
+    auto footerCloud = hintArea.reduced (56.0f, 0.0f);
+    g.setColour (juce::Colour::fromRGBA (16, 22, 54, 196));
+    g.fillRoundedRectangle (footerCloud, 13.0f);
+    g.setColour (juce::Colour::fromRGBA (132, 224, 255, 56));
+    g.drawRoundedRectangle (footerCloud, 13.0f, 1.0f);
+    g.setColour (juce::Colour::fromRGBA (216, 232, 255, 212));
+    g.setFont (juce::FontOptions (12.5f));
+    g.drawText ("Resume continues your voyage   |   New creates a fresh galaxy   |   Load opens a .drd save   |   Save writes the current voyage",
                 footerCloud.toNearestInt(),
                 juce::Justification::centred);
 
     if (hasTitleRecoverySlot)
     {
-        auto autosaveBand = footerCloud.translated (0.0f, -34.0f).withHeight (24.0f);
-        g.setColour (juce::Colour::fromRGBA (18, 26, 58, 182));
-        g.fillRoundedRectangle (autosaveBand, 10.0f);
-        g.setColour (juce::Colour::fromRGBA (138, 228, 255, 96));
-        g.drawRoundedRectangle (autosaveBand, 10.0f, 1.0f);
-        g.setColour (juce::Colour::fromRGBA (220, 236, 255, 214));
-        g.setFont (juce::FontOptions (12.5f));
+        auto autosaveBand = juce::Rectangle<float> (420.0f, 18.0f)
+                                .withCentre ({ footerCloud.getCentreX(), footerCloud.getBottom() + 30.0f });
+        g.setColour (juce::Colour::fromRGBA (12, 16, 38, 138));
+        g.fillRoundedRectangle (autosaveBand, 8.0f);
+        g.setColour (juce::Colour::fromRGBA (138, 228, 255, 52));
+        g.drawRoundedRectangle (autosaveBand, 8.0f, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (214, 228, 248, 170));
+        g.setFont (juce::FontOptions (11.0f));
         g.drawText ("Last autosave: " + titleRecoverySlot.savedUtc + "   |   " + titleRecoverySlot.galaxyName,
-                    autosaveBand.toNearestInt(), juce::Justification::centred);
+                    autosaveBand.toNearestInt(), juce::Justification::centred, true);
     }
 
     if (titleSlotOverlayMode != TitleSlotOverlayMode::none)
@@ -5017,6 +5504,8 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         return;
     }
 
+    ensureGalaxyDiscoveryState();
+
     auto mapArea = area.removeFromLeft (area.proportionOfWidth (0.57f)).reduced (10);
     auto sideArea = area.reduced (10);
     const float uiScale = juce::jlimit (0.82f, 1.0f,
@@ -5025,7 +5514,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
 
     auto drawReferencePanel = [&] (juce::Rectangle<int> bounds)
     {
-        drawPanel (g, bounds, juce::Colour::fromRGB (92, 190, 255));
+        drawPanel (g, bounds, juce::Colour::fromRGB (184, 120, 255));
     };
 
     drawReferencePanel (mapArea);
@@ -5034,17 +5523,26 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     auto mapFloat = mapArea.toFloat();
     const auto& system = getSelectedSystem();
     const auto& selectedPlanet = getSelectedPlanet();
+    const auto warpLinks = getGalaxyWarpLinks();
+    const auto selectedRegionName = getGalaxyRegionName (system);
+    const auto selectedRegionColour = getGalaxyRegionColour (system);
+    const int discoveredCount = static_cast<int> (std::count (discoveredGalaxySystems.begin(), discoveredGalaxySystems.end(), true));
     const auto identityColour = getPlanetIdentityColour (selectedPlanet);
     const auto selectedPoint = juce::Point<float> (static_cast<float> (mapArea.getX()) + system.galaxyPosition.x * static_cast<float> (mapArea.getWidth()),
                                                    static_cast<float> (mapArea.getY()) + system.galaxyPosition.y * static_cast<float> (mapArea.getHeight()));
-    juce::ColourGradient mapWash (juce::Colour::fromRGBA (26, 42, 96, 178),
+    juce::ColourGradient mapWash (juce::Colour::fromRGBA (24, 16, 104, 208),
                                   mapFloat.getX(), mapFloat.getY(),
-                                  juce::Colour::fromRGBA (8, 16, 46, 34),
+                                  juce::Colour::fromRGBA (6, 8, 34, 84),
                                   mapFloat.getRight(), mapFloat.getBottom(),
                                   false);
-    auto mapIdentity = identityColour.withMultipliedSaturation (1.1f).withAlpha (0.22f);
-    mapWash.addColour (0.40, mapIdentity);
+    auto mapIdentity = identityColour.withMultipliedSaturation (1.35f).withAlpha (0.28f);
+    mapWash.addColour (0.18, juce::Colour::fromRGBA (74, 232, 255, 46));
+    mapWash.addColour (0.40, mapIdentity.withAlpha (0.22f));
+    mapWash.addColour (0.68, juce::Colour::fromRGBA (255, 88, 224, 38));
+    mapWash.addColour (0.86, juce::Colour::fromRGBA (255, 184, 74, 28));
     g.setGradientFill (mapWash);
+    g.fillRoundedRectangle (mapFloat.reduced (8.0f), 18.0f);
+    g.setColour (juce::Colour::fromRGBA (0, 0, 0, 54));
     g.fillRoundedRectangle (mapFloat.reduced (8.0f), 18.0f);
 
     juce::Path travelRings;
@@ -5054,31 +5552,37 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         const float h = mapFloat.getHeight() * (0.12f + 0.09f * static_cast<float> (i));
         travelRings.addEllipse (juce::Rectangle<float> (w, h).withCentre (selectedPoint));
     }
-    g.setColour (identityColour.withAlpha (0.16f));
-    g.strokePath (travelRings, juce::PathStrokeType (1.1f));
+    g.setColour (identityColour.withMultipliedSaturation (1.2f).withAlpha (0.30f));
+    g.strokePath (travelRings, juce::PathStrokeType (1.6f));
 
     fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.4f,
                                          mapArea.getY() + mapArea.getHeight() * 0.1f,
                                          mapArea.getWidth() * 0.42f,
                                          mapArea.getHeight() * 0.42f),
-              juce::Colour (0xffffc16f), 0.20f);
+              juce::Colour::fromRGB (255, 198, 92), 0.18f);
 
     fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.10f,
                                          mapArea.getY() + mapArea.getHeight() * 0.44f,
                                          mapArea.getWidth() * 0.50f,
                                          mapArea.getHeight() * 0.34f),
-              juce::Colour::fromRGB (92, 176, 255), 0.14f);
+              juce::Colour::fromRGB (82, 224, 255), 0.12f);
     fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.52f,
                                          mapArea.getY() + mapArea.getHeight() * 0.28f,
                                          mapArea.getWidth() * 0.26f,
                                          mapArea.getHeight() * 0.24f),
-              juce::Colour::fromRGB (255, 112, 164), 0.10f);
+              juce::Colour::fromRGB (255, 82, 216), 0.10f);
+
+    fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.28f,
+                                         mapArea.getY() + mapArea.getHeight() * 0.18f,
+                                         mapArea.getWidth() * 0.30f,
+                                         mapArea.getHeight() * 0.22f),
+              juce::Colour::fromRGB (124, 255, 142), 0.08f);
 
     fillGlow (g, juce::Rectangle<float> (selectedPoint.x - mapArea.getWidth() * 0.20f,
                                          selectedPoint.y - mapArea.getHeight() * 0.18f,
                                          mapArea.getWidth() * 0.40f,
                                          mapArea.getHeight() * 0.36f),
-              identityColour, 0.14f);
+              identityColour, 0.18f);
 
     juce::Random farDust (0x47614C41);
     for (int i = 0; i < 170; ++i)
@@ -5086,8 +5590,12 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         const float x = mapFloat.getX() + farDust.nextFloat() * mapFloat.getWidth();
         const float y = mapFloat.getY() + farDust.nextFloat() * mapFloat.getHeight();
         const float size = 0.6f + farDust.nextFloat() * 1.4f;
-        const float alpha = 0.05f + farDust.nextFloat() * 0.18f;
-        g.setColour (juce::Colour::fromRGBA (188, 220, 255, static_cast<uint8_t> (alpha * 255.0f)));
+        const float alpha = 0.02f + farDust.nextFloat() * 0.10f;
+        const auto dustColour = juce::Colour::fromHSV (0.50f + 0.46f * farDust.nextFloat(),
+                                                       0.32f + 0.48f * farDust.nextFloat(),
+                                                       0.78f + 0.22f * farDust.nextFloat(),
+                                                       alpha);
+        g.setColour (dustColour);
         g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, y }));
     }
 
@@ -5140,39 +5648,168 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
             routePath.lineTo (x, y);
         }
     }
-    g.setColour (juce::Colour::fromRGBA (124, 196, 255, 30));
-    g.strokePath (constellationLines, juce::PathStrokeType (1.0f));
-    g.setColour (juce::Colour::fromRGBA (255, 224, 158, 58));
-    g.strokePath (routePath, juce::PathStrokeType (1.4f));
+    g.setColour (juce::Colour::fromRGBA (178, 226, 255, 66));
+    g.strokePath (constellationLines, juce::PathStrokeType (1.2f));
+    g.setColour (identityColour.interpolatedWith (juce::Colour::fromRGB (255, 228, 124), 0.42f).withAlpha (0.56f));
+    g.strokePath (routePath, juce::PathStrokeType (2.2f));
 
     juce::Random starDust (0x4B4C414E);
     for (int i = 0; i < 90; ++i)
     {
         const float x = mapFloat.getX() + starDust.nextFloat() * mapFloat.getWidth();
         const float y = mapFloat.getY() + starDust.nextFloat() * mapFloat.getHeight();
-        const float size = 1.0f + starDust.nextFloat() * 2.4f;
-        const auto colour = juce::Colour::fromHSV (0.52f + starDust.nextFloat() * 0.18f,
-                                                   0.25f + starDust.nextFloat() * 0.30f,
-                                                   0.75f + starDust.nextFloat() * 0.25f,
-                                                   0.20f + starDust.nextFloat() * 0.35f);
+        const float size = 0.8f + starDust.nextFloat() * 1.8f;
+        const auto colour = juce::Colour::fromHSV (starDust.nextFloat(),
+                                                   0.42f + starDust.nextFloat() * 0.42f,
+                                                   0.82f + starDust.nextFloat() * 0.18f,
+                                                   0.18f + starDust.nextFloat() * 0.24f);
         g.setColour (colour);
         g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ x, y }));
+    }
+
+    g.setColour (juce::Colour::fromRGBA (2, 4, 12, 228));
+    g.fillRoundedRectangle (mapFloat.reduced (8.0f), 18.0f);
+
+    juce::Path chartedConstellationLines;
+    juce::Path chartedRoutePath;
+    for (int i = 0; i < galaxy.systems.size(); ++i)
+    {
+        if (! isGalaxySystemDiscovered (i))
+            continue;
+
+        const auto& discoveredSystem = *galaxy.systems.getUnchecked (i);
+        const auto x = static_cast<float> (mapArea.getX()) + discoveredSystem.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+        const auto y = static_cast<float> (mapArea.getY()) + discoveredSystem.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+
+        float nearestDistance = std::numeric_limits<float>::max();
+        juce::Point<float> nearestPoint;
+        bool foundNeighbour = false;
+
+        for (int j = 0; j < galaxy.systems.size(); ++j)
+        {
+            if (i == j || ! isGalaxySystemDiscovered (j))
+                continue;
+
+            const auto& other = *galaxy.systems.getUnchecked (j);
+            const auto ox = static_cast<float> (mapArea.getX()) + other.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+            const auto oy = static_cast<float> (mapArea.getY()) + other.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+            const float dx = ox - x;
+            const float dy = oy - y;
+            const float distance = std::sqrt (dx * dx + dy * dy);
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearestPoint = { ox, oy };
+                foundNeighbour = true;
+            }
+        }
+
+        if (foundNeighbour && nearestDistance < mapArea.getWidth() * 0.26f)
+        {
+            chartedConstellationLines.startNewSubPath (x, y);
+            chartedConstellationLines.lineTo (nearestPoint);
+        }
+
+        if (i == selectedSystemIndex)
+            continue;
+
+        const float dx = x - selectedPoint.x;
+        const float dy = y - selectedPoint.y;
+        const float distance = std::sqrt (dx * dx + dy * dy);
+        if (distance < mapArea.getWidth() * 0.34f)
+        {
+            chartedRoutePath.startNewSubPath (selectedPoint);
+            chartedRoutePath.lineTo (x, y);
+        }
+    }
+
+    g.setColour (juce::Colour::fromRGBA (168, 220, 255, 84));
+    g.strokePath (chartedConstellationLines, juce::PathStrokeType (1.35f));
+    g.setColour (identityColour.interpolatedWith (juce::Colour::fromRGB (255, 226, 134), 0.48f).withAlpha (0.74f));
+    g.strokePath (chartedRoutePath, juce::PathStrokeType (2.4f));
+
+    juce::Path warpPath;
+    for (const auto& link : warpLinks)
+    {
+        if (! isGalaxySystemDiscovered (link.first) || ! isGalaxySystemDiscovered (link.second))
+            continue;
+
+        const auto& a = *galaxy.systems.getUnchecked (link.first);
+        const auto& b = *galaxy.systems.getUnchecked (link.second);
+        const auto ax = static_cast<float> (mapArea.getX()) + a.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+        const auto ay = static_cast<float> (mapArea.getY()) + a.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+        const auto bx = static_cast<float> (mapArea.getX()) + b.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+        const auto by = static_cast<float> (mapArea.getY()) + b.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+
+        warpPath.startNewSubPath (ax, ay);
+        warpPath.lineTo (bx, by);
+    }
+    g.setColour (juce::Colour::fromRGBA (255, 112, 244, 92));
+    g.strokePath (warpPath, juce::PathStrokeType (3.2f));
+    g.setColour (juce::Colour::fromRGBA (140, 248, 255, 118));
+    g.strokePath (warpPath, juce::PathStrokeType (1.2f));
+
+    auto chartedChip = juce::Rectangle<float> (190.0f, 28.0f)
+                           .withPosition (mapFloat.getX() + 18.0f, mapFloat.getY() + 16.0f);
+    g.setColour (juce::Colour::fromRGBA (10, 18, 44, 210));
+    g.fillRoundedRectangle (chartedChip, 10.0f);
+    g.setColour (selectedRegionColour.withAlpha (0.92f));
+    g.drawRoundedRectangle (chartedChip, 10.0f, 1.2f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (12.0f * uiScale, juce::Font::bold));
+    g.drawText ("CHARTED  " + juce::String (discoveredCount) + "/" + juce::String (galaxy.systems.size()),
+                chartedChip.toNearestInt(), juce::Justification::centred);
+
+    for (int i = 0; i < galaxy.systems.size(); ++i)
+    {
+        if (! isGalaxySystemDiscovered (i))
+            continue;
+
+        const auto& discoveredSystem = *galaxy.systems.getUnchecked (i);
+        const auto sx = static_cast<float> (mapArea.getX()) + discoveredSystem.galaxyPosition.x * static_cast<float> (mapArea.getWidth());
+        const auto sy = static_cast<float> (mapArea.getY()) + discoveredSystem.galaxyPosition.y * static_cast<float> (mapArea.getHeight());
+        const auto revealColour = getGalaxyRegionColour (discoveredSystem).interpolatedWith (discoveredSystem.planets[0]->accent, 0.42f);
+        fillGlow (g, juce::Rectangle<float> (sx - 110.0f, sy - 110.0f, 220.0f, 220.0f), revealColour, i == selectedSystemIndex ? 0.42f : 0.26f);
     }
 
     for (int i = 0; i < galaxy.systems.size(); ++i)
     {
         const auto& system = *galaxy.systems.getUnchecked (i);
+        const bool discovered = isGalaxySystemDiscovered (i);
         const auto x = mapArea.getX() + static_cast<int> (system.galaxyPosition.x * static_cast<float> (mapArea.getWidth()));
         const auto y = mapArea.getY() + static_cast<int> (system.galaxyPosition.y * static_cast<float> (mapArea.getHeight()));
         const auto selected = i == selectedSystemIndex;
+        const auto rainbowSystem = juce::Colour::fromHSV (std::fmod (0.13f * static_cast<float> (i) + 0.08f, 1.0f),
+                                                          0.72f,
+                                                          1.0f,
+                                                          1.0f);
         const auto systemColour = system.planets[0]->accent
-                                      .interpolatedWith (juce::Colour::fromRGB (120, 210, 255), 0.18f)
-                                      .brighter (0.25f);
+                                      .interpolatedWith (rainbowSystem, 0.58f)
+                                      .interpolatedWith (juce::Colour::fromRGB (120, 210, 255), 0.12f)
+                                      .brighter (0.42f);
+        const bool hasWarpHole = getWarpDestinationForSystem (i) >= 0;
+
+        if (! discovered)
+        {
+            fillGlow (g, juce::Rectangle<float> (static_cast<float> (x - 18), static_cast<float> (y - 18), 36.0f, 36.0f),
+                      juce::Colour::fromRGBA (194, 206, 230, 220), selected ? 0.24f : 0.14f);
+            g.setColour (juce::Colour::fromRGBA (220, 228, 244, selected ? 210 : 132));
+            g.drawEllipse (static_cast<float> (x - 7), static_cast<float> (y - 7), 14.0f, 14.0f, selected ? 1.8f : 1.2f);
+            g.setFont (juce::FontOptions (14.0f * uiScale, juce::Font::bold));
+            g.drawText ("?", juce::Rectangle<int> (x - 8, y - 10, 16, 20), juce::Justification::centred);
+            continue;
+        }
 
         fillGlow (g, juce::Rectangle<float> (static_cast<float> (x - 22), static_cast<float> (y - 22), 44.0f, 44.0f),
-                  selected ? juce::Colour (0xffffe3ae) : systemColour, selected ? 0.48f : 0.24f);
+                  selected ? juce::Colour (0xffffe3ae).interpolatedWith (identityColour, 0.35f) : systemColour,
+                  selected ? 0.62f : 0.34f);
         fillGlow (g, juce::Rectangle<float> (static_cast<float> (x - 10), static_cast<float> (y - 10), 20.0f, 20.0f),
-                  selected ? juce::Colour (0xffffffff) : systemColour.brighter (0.4f), selected ? 0.22f : 0.10f);
+                  selected ? juce::Colour (0xffffffff) : systemColour.brighter (0.6f), selected ? 0.30f : 0.14f);
+        g.setColour (juce::Colour::fromRGBA (0, 0, 0, selected ? 120 : 84));
+        g.fillEllipse (static_cast<float> (x - (selected ? 9 : 6)),
+                       static_cast<float> (y - (selected ? 9 : 6)),
+                       static_cast<float> (selected ? 18 : 12),
+                       static_cast<float> (selected ? 18 : 12));
         g.setColour (selected ? juce::Colour (0xfffff7e2) : systemColour.interpolatedWith (juce::Colour (0xfff8f0ff), 0.22f));
         g.fillEllipse (static_cast<float> (x - (selected ? 7 : 4)),
                        static_cast<float> (y - (selected ? 7 : 4)),
@@ -5183,6 +5820,20 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
                        static_cast<float> (y - (selected ? 2.4f : 1.6f)),
                        static_cast<float> (selected ? 4.8f : 3.2f),
                        static_cast<float> (selected ? 4.8f : 3.2f));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, selected ? 160 : 88));
+        g.drawEllipse (static_cast<float> (x - (selected ? 8 : 5)),
+                       static_cast<float> (y - (selected ? 8 : 5)),
+                       static_cast<float> (selected ? 16 : 10),
+                       static_cast<float> (selected ? 16 : 10),
+                       selected ? 1.4f : 1.0f);
+
+        if (hasWarpHole)
+        {
+            g.setColour (juce::Colour::fromRGBA (255, 116, 238, selected ? 224 : 168));
+            g.drawEllipse (static_cast<float> (x - 12), static_cast<float> (y - 12), 24.0f, 24.0f, selected ? 2.2f : 1.4f);
+            g.setColour (juce::Colour::fromRGBA (122, 246, 255, selected ? 198 : 132));
+            g.drawEllipse (static_cast<float> (x - 15), static_cast<float> (y - 15), 30.0f, 30.0f, 1.0f);
+        }
 
         if (selected)
         {
@@ -5195,6 +5846,19 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
             g.drawFittedText (system.name.toUpperCase(),
                               juce::Rectangle<int> (x + 16, y - 12, 140, 24),
                               juce::Justification::centredLeft, 1);
+            g.setColour (selectedRegionColour.withAlpha (0.88f));
+            g.setFont (juce::FontOptions (10.5f * uiScale));
+            g.drawFittedText (selectedRegionName.toUpperCase(),
+                              juce::Rectangle<int> (x + 16, y + 4, 140, 18),
+                              juce::Justification::centredLeft, 1);
+            if (hasWarpHole)
+            {
+                g.setColour (juce::Colour::fromRGBA (255, 186, 246, 228));
+                g.setFont (juce::FontOptions (10.0f * uiScale, juce::Font::bold));
+                g.drawFittedText ("WARP HOLE",
+                                  juce::Rectangle<int> (x + 16, y + 20, 140, 18),
+                                  juce::Justification::centredLeft, 1);
+            }
         }
     }
 
@@ -5235,8 +5899,10 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (12.0f * uiScale));
     g.drawFittedText ("Chart routes through " + selectedPlanet.name + "'s sector   "
+                      + selectedRegionName + " now charted   "
                       + getPlanetBuildModeName (selectedPlanet.assignedBuildMode) + " worlds shape differently   "
-                      + getPlanetPerformanceModeName (selectedPlanet.assignedPerformanceMode) + " worlds sound differently",
+                      + getPlanetPerformanceModeName (selectedPlanet.assignedPerformanceMode) + " worlds sound differently   "
+                      + getPlanetTraitName (selectedPlanet.trait) + " traits bend the rules",
                       detailChip.reduced (14.0f, 6.0f).toNearestInt(),
                       juce::Justification::centredLeft, 2);
 
@@ -5265,14 +5931,16 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     statRowA.removeFromLeft (statGap);
     drawStat (statRowA.removeFromLeft (statWidthA), "PLANET", juce::String (selectedPlanetIndex + 1) + "/" + juce::String (system.planets.size()));
     statRowA.removeFromLeft (statGap);
-    drawStat (statRowA.removeFromLeft (statWidthA), "MODE", getPlanetBuildModeName (selectedPlanet.assignedBuildMode));
+    drawStat (statRowA.removeFromLeft (statWidthA), "REGION", selectedRegionName + (getWarpDestinationForSystem (selectedSystemIndex) >= 0 ? "  WARP" : ""));
 
     inner.removeFromTop (8.0f * uiScale);
     auto statRowB = inner.removeFromTop (54.0f * uiScale);
-    const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
+    const float statWidthB = (statRowB.getWidth() - statGap * 2.0f) / 3.0f;
     drawStat (statRowB.removeFromLeft (statWidthB), "PERF", getPlanetPerformanceModeName (selectedPlanet.assignedPerformanceMode));
     statRowB.removeFromLeft (statGap);
-    drawStat (statRowB.removeFromLeft (statWidthB), "DISCOVERY", juce::String (juce::roundToInt ((system.planets.size() / 7.0f) * 100.0f)) + "%");
+    drawStat (statRowB.removeFromLeft (statWidthB), "TRAIT", getPlanetTraitName (selectedPlanet.trait));
+    statRowB.removeFromLeft (statGap);
+    drawStat (statRowB.removeFromLeft (statWidthB), "FUEL", juce::String (std::round (galaxyFuel)) + "/" + juce::String (std::round (galaxyFuelCapacity)));
 
     inner.removeFromTop (10.0f * uiScale);
     auto drawChip = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
@@ -5298,15 +5966,15 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     const float gap = 10.0f * uiScale;
     auto infoRowA = inner.removeFromTop (30.0f * uiScale);
     const float chipW = (infoRowA.getWidth() - gap) / 2.0f;
-    drawChip (infoRowA.removeFromLeft (chipW), "Systems", juce::String (galaxy.systems.size()));
+    drawChip (infoRowA.removeFromLeft (chipW), "Charted", juce::String (discoveredCount));
     infoRowA.removeFromLeft (gap);
-    drawChip (infoRowA.removeFromLeft (chipW), "Planets", juce::String (system.planets.size()));
+    drawChip (infoRowA.removeFromLeft (chipW), "Region", selectedRegionName);
 
     inner.removeFromTop (8.0f * uiScale);
     auto infoRowB = inner.removeFromTop (30.0f * uiScale);
     drawChip (infoRowB.removeFromLeft (chipW), "Orbit", juce::String (getSelectedPlanet().orbitIndex + 1));
     infoRowB.removeFromLeft (gap);
-    drawChip (infoRowB.removeFromLeft (chipW), "Signal", juce::String (getSelectedPlanet().musicalRootHz, 1) + " Hz");
+    drawChip (infoRowB.removeFromLeft (chipW), "Signal", juce::String (getSelectedPlanet().musicalRootHz, 1) + " Hz   Fuel " + juce::String (galaxyFuel, 1));
 
     inner.removeFromTop (10.0f * uiScale);
     auto listArea = inner.removeFromTop (juce::jmin (252.0f * uiScale, inner.getHeight() - 52.0f * uiScale));
@@ -5322,7 +5990,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         g.drawRoundedRectangle (row, 8.0f, i == selectedPlanetIndex ? 1.7f : 1.1f);
         g.setColour (juce::Colour::fromRGBA (255, 255, 255, i == selectedPlanetIndex ? 24 : 12));
         g.fillRoundedRectangle (row.reduced (3.0f, 3.0f).withHeight (row.getHeight() * 0.18f), 3.0f);
-        g.setColour (planet.accent);
+        g.setColour (isGalaxySystemDiscovered (selectedSystemIndex) ? planet.accent : juce::Colour::fromRGB (156, 164, 182));
         g.fillEllipse (row.removeFromLeft (28.0f).reduced (4.0f));
         auto text = row.reduced (8.0f * uiScale, 5.0f * uiScale);
         g.setColour (juce::Colours::white);
@@ -5332,6 +6000,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         g.setFont (juce::FontOptions (11.0f * uiScale));
         g.drawFittedText (getPlanetBuildModeName (planet.assignedBuildMode)
                           + " / " + getPlanetPerformanceModeName (planet.assignedPerformanceMode)
+                          + " / " + getPlanetTraitName (planet.trait)
                           + "   water " + juce::String (planet.water, 2)
                           + "   energy " + juce::String (planet.energy, 2),
                           text.toNearestInt(), juce::Justification::centredLeft, 1);
@@ -5346,7 +6015,9 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     g.drawRoundedRectangle (footerRow, 8.0f, 1.0f);
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
     g.setFont (juce::FontOptions (11.5f * uiScale));
-    g.drawFittedText ("Now charting  " + system.name + " / " + selectedPlanet.name + "   "
+    g.drawFittedText ((galaxyStatusMessage.isNotEmpty() ? galaxyStatusMessage + "   |   " : juce::String())
+                      + "Now charting  " + system.name + " / " + selectedPlanet.name + "   "
+                      + selectedRegionName + "   "
                       + getPlanetIdentitySummary (selectedPlanet),
                       footerRow.reduced (12.0f, 6.0f).toNearestInt(), juce::Justification::centredLeft, 2);
 }
@@ -5441,6 +6112,7 @@ void GameComponent::drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> a
                           + "   root " + juce::String (entry.musicalRootHz, 1) + " Hz"
                           + "   mode " + getPlanetBuildModeName (entry.assignedBuildMode)
                           + "   perf " + getPlanetPerformanceModeName (entry.assignedPerformanceMode)
+                          + "   trait " + getPlanetTraitName (entry.trait)
                           + "   visits " + juce::String (entry.visitCount),
                           mid.toNearestInt(), juce::Justification::centredLeft, 1);
 
@@ -5772,11 +6444,13 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     statRowA.removeFromLeft (statGap);
     drawStat (statRowA.removeFromLeft (statWidthA), "PERF", getPlanetPerformanceModeName (planet.assignedPerformanceMode));
     statRowA.removeFromLeft (statGap);
-    drawStat (statRowA.removeFromLeft (statWidthA), "KEY", getNoteNameForLayer (1));
+    drawStat (statRowA.removeFromLeft (statWidthA), "TRAIT", getPlanetTraitName (planet.trait));
 
     inner.removeFromTop (8.0f * uiScale);
     auto statRowB = inner.removeFromTop (54.0f * uiScale);
-    const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
+    const float statWidthB = (statRowB.getWidth() - statGap * 2.0f) / 3.0f;
+    drawStat (statRowB.removeFromLeft (statWidthB), "KEY", getNoteNameForLayer (1));
+    statRowB.removeFromLeft (statGap);
     drawStat (statRowB.removeFromLeft (statWidthB), "SCALE", getPerformanceScaleName());
     statRowB.removeFromLeft (statGap);
     drawStat (statRowB.removeFromLeft (statWidthB), "SYNTH", getPerformanceSynthName());
@@ -5810,12 +6484,14 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     inner.removeFromTop (8.0f * uiScale);
     auto infoRowC = inner.removeFromTop (30.0f * uiScale);
     drawInfoChip (infoRowC, "Build  " + getPlanetBuildModeName (planet.assignedBuildMode)
-                            + "   |   Performance  " + getPlanetPerformanceModeName (planet.assignedPerformanceMode));
+                            + "   |   Performance  " + getPlanetPerformanceModeName (planet.assignedPerformanceMode)
+                            + "   |   Trait  " + getPlanetTraitName (planet.trait));
 
     inner.removeFromTop (10.0f * uiScale);
     auto bodyChip = inner.removeFromTop (68.0f * uiScale);
     drawInfoChip (bodyChip, getPlanetBuildModeFlavour (planet.assignedBuildMode)
                             + ". " + getPlanetPerformanceModeFlavour (planet.assignedPerformanceMode)
+                            + ". " + getPlanetTraitFlavour (planet.trait)
                             + ". If you built here before, the resident voxel stack has already been restored.");
 
     inner.removeFromTop (10.0f * uiScale);
@@ -5841,7 +6517,7 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
                 }
             }
 
-            g.setColour (getNoteColourForLayer (topZ));
+            g.setColour (getRenderedBlockColour (activePlanetState->getBlock (x, y, topZ), topZ, 1.0f));
             g.fillRect (gridX + x * tileSize, gridY + y * tileSize, juce::jmax (1, tileSize - 1), juce::jmax (1, tileSize - 1));
         }
 
@@ -6123,7 +6799,9 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
                                                                innerCell.getBottom() - sliceHeight * static_cast<float> (i + 1) + 1.0f,
                                                                innerCell.getWidth(),
                                                                juce::jmax (1.0f, sliceHeight - 2.0f));
-                    auto sliceColour = getNoteColourForLayer (notes[i]).interpolatedWith (juce::Colours::white, 0.08f);
+                    const int blockType = activePlanetState->getBlock (x, y, notes[i]);
+                    auto sliceColour = getRenderedBlockColour (blockType, notes[i], 1.0f)
+                                         .interpolatedWith (juce::Colours::white, 0.08f);
                     if (! inRegion)
                     {
                         sliceColour = sliceColour.interpolatedWith (juce::Colour::greyLevel (sliceColour.getPerceivedBrightness()), 0.78f)
@@ -7167,7 +7845,7 @@ void GameComponent::drawTetrisBuildView (juce::Graphics& g, juce::Rectangle<floa
             std::vector<LayerSlice> slices;
             for (int z = 1; z < getSurfaceHeight(); ++z)
                 if (activePlanetState->getBlock (x, y, z) != 0)
-                    slices.push_back ({ getNoteColourForLayer (z), z == activeLayerZ });
+                    slices.push_back ({ getRenderedBlockColour (activePlanetState->getBlock (x, y, z), z, 1.0f), z == activeLayerZ });
 
             if (! slices.empty())
             {
@@ -7291,7 +7969,8 @@ void GameComponent::drawAutomataBuildView (juce::Graphics& g, juce::Rectangle<fl
 
             if (activeFilled)
             {
-                const auto activeColour = getNoteColourForLayer (activeLayerZ).withMultipliedBrightness (1.1f);
+                const auto activeColour = getRenderedBlockColour (activePlanetState->getBlock (x, y, activeLayerZ),
+                                                                  activeLayerZ, 1.1f);
                 g.setColour (activeColour.withAlpha (0.22f + 0.08f * pulse));
                 g.fillRoundedRectangle (innerCell.expanded (3.0f), 7.0f);
                 g.setColour (activeColour);
@@ -7708,9 +8387,7 @@ void GameComponent::fillTexturedDiamond (juce::Graphics& g, const juce::Path& pa
 
 void GameComponent::fillTexturedRect (juce::Graphics& g, juce::Rectangle<float> area, int blockType, int zLayer, float brightness, bool topFace) const
 {
-    const auto noteBase = getNoteColourForLayer (zLayer);
-    const auto materialTint = getBlockColour (blockType);
-    const auto base = noteBase.interpolatedWith (materialTint, 0.18f).withMultipliedBrightness (brightness);
+    const auto base = getRenderedBlockColour (blockType, zLayer, brightness);
     g.setColour (base);
     g.fillRect (area);
 
@@ -7759,10 +8436,10 @@ juce::Colour GameComponent::getBlockColour (int blockType) const
 {
     switch (blockType)
     {
-        case 1: return juce::Colour (0xff5d4b3b);
-        case 2: return juce::Colour (0xff7ab6c8);
-        case 3: return juce::Colour (0xffd39a52);
-        case 4: return juce::Colour (0xff597b4b);
+        case 1: return juce::Colour::fromRGB (255, 82, 122);
+        case 2: return juce::Colour::fromRGB (86, 232, 255);
+        case 3: return juce::Colour::fromRGB (255, 214, 72);
+        case 4: return juce::Colour::fromRGB (118, 255, 126);
         default: return juce::Colour (0xff0c0908);
     }
 }
@@ -7770,26 +8447,33 @@ juce::Colour GameComponent::getBlockColour (int blockType) const
 juce::Colour GameComponent::getNoteColourForLayer (int zLayer) const
 {
     if (zLayer <= 0)
-        return juce::Colour::fromRGB (72, 76, 88);
+        return juce::Colour::fromRGB (92, 98, 122);
 
     switch ((zLayer - 1) % 12)
     {
-        case 0: return juce::Colour::fromRGB (247, 223, 67);
-        case 1: return juce::Colour::fromRGB (240, 147, 49);
-        case 2: return juce::Colour::fromRGB (78, 191, 104);
-        case 3: return juce::Colour::fromRGB (61, 210, 201);
-        case 4: return juce::Colour::fromRGB (138, 93, 214);
-        case 5: return juce::Colour::fromRGB (229, 78, 196);
-        case 6: return juce::Colour::fromRGB (232, 60, 56);
-        case 7: return juce::Colour::fromRGB (238, 100, 46);
-        case 8: return juce::Colour::fromRGB (214, 47, 47);
-        case 9: return juce::Colour::fromRGB (244, 155, 57);
-        case 10: return juce::Colour::fromRGB (248, 194, 70);
-        case 11: return juce::Colour::fromRGB (247, 173, 84);
+        case 0: return juce::Colour::fromRGB (255, 64, 108);
+        case 1: return juce::Colour::fromRGB (255, 108, 64);
+        case 2: return juce::Colour::fromRGB (255, 182, 54);
+        case 3: return juce::Colour::fromRGB (255, 238, 72);
+        case 4: return juce::Colour::fromRGB (148, 255, 82);
+        case 5: return juce::Colour::fromRGB (64, 255, 152);
+        case 6: return juce::Colour::fromRGB (58, 244, 255);
+        case 7: return juce::Colour::fromRGB (68, 162, 255);
+        case 8: return juce::Colour::fromRGB (92, 96, 255);
+        case 9: return juce::Colour::fromRGB (164, 84, 255);
+        case 10: return juce::Colour::fromRGB (255, 68, 248);
+        case 11: return juce::Colour::fromRGB (255, 78, 164);
         default: break;
     }
 
     return juce::Colours::white;
+}
+
+juce::Colour GameComponent::getRenderedBlockColour (int blockType, int zLayer, float brightness) const
+{
+    const auto noteBase = getNoteColourForLayer (zLayer);
+    const auto materialTint = getBlockColour (blockType);
+    return noteBase.interpolatedWith (materialTint, 0.18f).withMultipliedBrightness (brightness);
 }
 
 juce::String GameComponent::getNoteNameForLayer (int zLayer) const
@@ -8189,6 +8873,13 @@ void GameComponent::timerCallback()
     {
         if (--autosaveCountdownFrames <= 0)
             performAutosave();
+    }
+
+    if (galaxyStatusMessageFrames > 0)
+    {
+        --galaxyStatusMessageFrames;
+        if (galaxyStatusMessageFrames <= 0)
+            galaxyStatusMessage.clear();
     }
 
     if (currentScene == Scene::builder && performanceMode)
