@@ -42,6 +42,13 @@ private:
         saveVoyage
     };
 
+    enum class TitleSlotOverlayMode
+    {
+        none,
+        load,
+        save
+    };
+
     enum class BuilderViewMode
     {
         isometric,
@@ -293,6 +300,7 @@ private:
     GalaxyMetadata galaxy;
     PersistenceManager persistence;
     Scene currentScene = Scene::title;
+    Scene resumeScene = Scene::galaxy;
     bool galaxyLogOpen = false;
     float galaxyLogScroll = 0.0f;
     juce::String expandedLogHeatmapPlanetId;
@@ -301,6 +309,17 @@ private:
     int selectedPlanetIndex = 0;
     TitleAction hoveredTitleAction = TitleAction::none;
     bool titleResumeAvailable = false;
+    TitleSlotOverlayMode titleSlotOverlayMode = TitleSlotOverlayMode::none;
+    std::vector<SaveSlotSummary> titleSaveSlots;
+    SaveSlotSummary titleRecoverySlot;
+    bool hasTitleRecoverySlot = false;
+    int titleSelectedSlotIndex = -1;
+    juce::String titleSlotNameDraft = "Voyage";
+    juce::String titleSlotStatusMessage;
+    juce::String titleArmedOverwriteSlotKey;
+    juce::String titleArmedDeleteSlotKey;
+    bool autosavePending = false;
+    int autosaveCountdownFrames = 0;
     std::unique_ptr<PlanetSurfaceState> activePlanetState;
     BuilderViewMode builderViewMode = BuilderViewMode::isometric;
     TopDownBuildMode topDownBuildMode = TopDownBuildMode::none;
@@ -453,6 +472,12 @@ private:
     juce::String getIsometricChordName() const;
     juce::String getTopDownBuildModeName() const;
     juce::String getPlanetBuildModeName (PlanetBuildMode mode) const;
+    juce::Colour getPlanetBuildModeColour (PlanetBuildMode mode) const;
+    juce::Colour getPlanetPerformanceModeColour (PlanetPerformanceMode mode) const;
+    juce::Colour getPlanetIdentityColour (const PlanetMetadata& planet) const;
+    juce::String getPlanetBuildModeFlavour (PlanetBuildMode mode) const;
+    juce::String getPlanetPerformanceModeFlavour (PlanetPerformanceMode mode) const;
+    juce::String getPlanetIdentitySummary (const PlanetMetadata& planet) const;
     void applyAssignedBuildModeForPlanet();
     juce::String getTetrominoTypeName (TetrominoType type) const;
     std::array<juce::Point<int>, 4> getTetrominoOffsets (TetrominoType type, int rotation) const;
@@ -481,11 +506,30 @@ private:
     juce::String getSceneTitle() const;
     juce::String getBuilderViewName() const;
     juce::Rectangle<float> titleCardBounds (juce::Rectangle<float> area) const;
+    juce::Rectangle<float> getTitleInteractionArea() const;
     juce::Rectangle<float> titleButtonBounds (juce::Rectangle<float> area, int index) const;
     TitleAction titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const;
     juce::String titleActionLabel (TitleAction action) const;
     bool isTitleActionEnabled (TitleAction action) const;
     void enterGalaxyFromTitle (bool regenerateGalaxy);
+    juce::var serialiseVoyageSession() const;
+    void restoreVoyageSession (const juce::var& sessionState);
+    void refreshTitleSaveSlots();
+    void queueAutosave();
+    void performAutosave();
+    void openTitleSlotOverlay (TitleSlotOverlayMode mode);
+    void closeTitleSlotOverlay();
+    bool performTitleSaveToSlot (juce::String slotName);
+    bool performTitleLoadFromSlot (int slotIndex);
+    bool performTitleDeleteSlot (int slotIndex);
+    bool performTitleRenameSlot (int slotIndex, juce::String newName);
+    juce::String getSlotKeyForDraftName (juce::String slotName) const;
+    juce::Rectangle<float> getTitleSlotOverlayBounds (juce::Rectangle<float> area) const;
+    juce::Rectangle<float> getTitleSlotInputBounds (juce::Rectangle<float> overlay) const;
+    juce::Rectangle<float> getTitleSlotConfirmBounds (juce::Rectangle<float> overlay) const;
+    juce::Rectangle<float> getTitleSlotRenameBounds (juce::Rectangle<float> overlay) const;
+    juce::Rectangle<float> getTitleSlotDeleteBounds (juce::Rectangle<float> overlay) const;
+    juce::Rectangle<float> getTitleSlotRowBounds (juce::Rectangle<float> overlay, int index) const;
     void drawHeader (juce::Graphics& g, juce::Rectangle<int> area);
     void drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area);

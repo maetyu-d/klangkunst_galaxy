@@ -127,6 +127,35 @@ std::vector<int> deserialiseIntVector (const juce::var& value)
     }
     return result;
 }
+
+juce::String normaliseSlotKey (juce::String name)
+{
+    name = name.trim();
+    if (name.isEmpty())
+        name = "Voyage";
+
+    juce::String key;
+    key.preallocateBytes (name.getNumBytesAsUTF8());
+
+    for (auto ch : name)
+    {
+        if (juce::CharacterFunctions::isLetterOrDigit (ch))
+            key << juce::CharacterFunctions::toLowerCase (ch);
+        else if (ch == ' ' || ch == '-' || ch == '_')
+            key << '-';
+    }
+
+    while (key.contains ("--"))
+        key = key.replace ("--", "-");
+
+    key = key.trimCharactersAtStart ("-").trimCharactersAtEnd ("-");
+    return key.isEmpty() ? "voyage" : key;
+}
+
+juce::var deepCloneVar (const juce::var& value)
+{
+    return juce::JSON::parse (juce::JSON::toString (value, true));
+}
 }
 
 int PlanetSurfaceState::getIndex (int x, int y, int z) const noexcept
@@ -165,9 +194,11 @@ int PlanetSurfaceState::getTopBlock (int x, int y, int maxLayer) const noexcept
 
 PersistenceManager::PersistenceManager()
 {
-    auto baseDir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                       .getChildFile ("KlangKunstGalaxy");
+    baseDir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                  .getChildFile ("KlangKunstGalaxy");
     baseDir.createDirectory();
+    slotsDir = baseDir.getChildFile ("slots");
+    slotsDir.createDirectory();
     saveFile = baseDir.getChildFile ("planet_persistence.json");
 }
 
@@ -189,7 +220,7 @@ void PersistenceManager::savePlanet (const PlanetSurfaceState& state)
     if (auto* planets = getPlanetsObject())
     {
         planets->setProperty (state.planetId, serialiseState (state));
-        saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+        writeWorkingData();
     }
 }
 
@@ -225,7 +256,7 @@ void PersistenceManager::recordPlanetVisit (const StarSystemMetadata& system, co
             entry->setProperty ("accent", planet.accent.toDisplayString (true));
             entry->setProperty ("lastVisitedUtc", nowIso);
             entry->setProperty ("visitCount", static_cast<int> (entry->getProperty ("visitCount")) + 1);
-            saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+            writeWorkingData();
             return;
         }
     }
@@ -249,7 +280,7 @@ void PersistenceManager::recordPlanetVisit (const StarSystemMetadata& system, co
     entry->setProperty ("lastVisitedUtc", nowIso);
     entry->setProperty ("visitCount", 1);
     visitLog->add (juce::var (entry));
-    saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+    writeWorkingData();
 }
 
 void PersistenceManager::recordPerformanceSnapshot (const StarSystemMetadata& system, const PlanetMetadata& planet,
@@ -298,7 +329,7 @@ void PersistenceManager::recordPerformanceSnapshot (const StarSystemMetadata& sy
             mergeVectorProperty ("performanceTriggerHeat", triggerHeat);
             mergeVectorProperty ("performanceNoteHeat", noteHeat);
 
-            saveFile.replaceWithText (juce::JSON::toString (rootData, true));
+            writeWorkingData();
             return;
         }
     }
@@ -354,6 +385,206 @@ std::vector<VisitLogEntry> PersistenceManager::getVisitLog()
     return entries;
 }
 
+std::vector<SaveSlotSummary> PersistenceManager::getSaveSlots()
+{
+    std::vector<SaveSlotSummary> slots;
+
+    if (! slotsDir.isDirectory())
+        slotsDir.createDirectory();
+
+    juce::Array<juce::File> files;
+    slotsDir.findChildFiles (files, juce::File::findFiles, false, "*.drd");
+
+    slots.reserve (static_cast<size_t> (files.size()));
+    for (const auto& file : files)
+    {
+        const auto data = juce::JSON::parse (file);
+        auto* object = data.getDynamicObject();
+        if (object == nullptr)
+            continue;
+
+        SaveSlotSummary slot;
+        slot.slotKey = object->getProperty ("slotKey").toString();
+        slot.slotName = object->getProperty ("slotName").toString();
+        slot.fileName = file.getFileName();
+        slot.savedUtc = object->getProperty ("savedUtc").toString();
+        slot.isAutosave = static_cast<bool> (object->getProperty ("isAutosave"));
+
+        if (const auto* galaxyObject = object->getProperty ("galaxy").getDynamicObject(); galaxyObject != nullptr)
+        {
+            slot.galaxyName = galaxyObject->getProperty ("name").toString();
+            slot.galaxySeed = static_cast<int> (galaxyObject->getProperty ("seed"));
+            if (const auto* systems = galaxyObject->getProperty ("systems").getArray(); systems != nullptr)
+                slot.systemCount = systems->size();
+        }
+
+        if (const auto* persistenceObject = object->getProperty ("persistence").getDynamicObject(); persistenceObject != nullptr)
+        {
+            if (const auto* visitLog = persistenceObject->getProperty ("visitLog").getArray(); visitLog != nullptr)
+                slot.visitedPlanets = visitLog->size();
+        }
+
+        if (slot.slotName.isEmpty())
+            slot.slotName = file.getFileNameWithoutExtension();
+        if (slot.slotKey.isEmpty())
+            slot.slotKey = normaliseSlotKey (slot.slotName);
+        if (slot.slotKey == "recovery-autosave" || slot.isAutosave)
+            continue;
+
+        slots.push_back (std::move (slot));
+    }
+
+    std::sort (slots.begin(), slots.end(), [] (const SaveSlotSummary& a, const SaveSlotSummary& b)
+    {
+        return a.savedUtc > b.savedUtc;
+    });
+
+    return slots;
+}
+
+bool PersistenceManager::saveVoyageSlot (const juce::String& slotName, const GalaxyMetadata& galaxy, const juce::var& sessionState)
+{
+    ensureLoaded();
+    slotsDir.createDirectory();
+
+    const auto cleanedName = slotName.trim().isEmpty() ? "Voyage" : slotName.trim();
+    const auto slotKey = normaliseSlotKey (cleanedName);
+    const auto slotFile = slotsDir.getChildFile (slotKey + ".drd");
+
+    return writeVoyageSlotFile (slotFile, slotKey, cleanedName, false, galaxy, sessionState);
+}
+
+bool PersistenceManager::saveRecoveryVoyage (const GalaxyMetadata& galaxy, const juce::var& sessionState)
+{
+    ensureLoaded();
+    slotsDir.createDirectory();
+    const auto slotKey = juce::String ("recovery-autosave");
+    const auto slotFile = slotsDir.getChildFile (slotKey + ".drd");
+    return writeVoyageSlotFile (slotFile, slotKey, "Recovery Autosave", true, galaxy, sessionState);
+}
+
+bool PersistenceManager::writeVoyageSlotFile (const juce::File& slotFile, const juce::String& slotKey, const juce::String& slotName,
+                                              bool isAutosave, const GalaxyMetadata& galaxy, const juce::var& sessionState)
+{
+    auto* object = new juce::DynamicObject();
+    object->setProperty ("fileType", "KlangKunstGalaxyVoyage");
+    object->setProperty ("formatVersion", 1);
+    object->setProperty ("slotKey", slotKey);
+    object->setProperty ("slotName", slotName.trim().isEmpty() ? "Voyage" : slotName.trim());
+    object->setProperty ("savedUtc", juce::Time::getCurrentTime().toISO8601 (true));
+    object->setProperty ("isAutosave", isAutosave);
+    object->setProperty ("galaxy", serialiseGalaxy (galaxy));
+    object->setProperty ("session", deepCloneVar (sessionState));
+    object->setProperty ("persistence", deepCloneVar (rootData));
+
+    return slotFile.replaceWithText (juce::JSON::toString (juce::var (object), true));
+}
+
+bool PersistenceManager::loadVoyageSlot (const juce::String& slotKey, GalaxyMetadata& galaxy, juce::var& sessionState)
+{
+    slotsDir.createDirectory();
+    const auto slotFile = slotsDir.getChildFile (normaliseSlotKey (slotKey) + ".drd");
+    if (! slotFile.existsAsFile())
+        return false;
+
+    const auto data = juce::JSON::parse (slotFile);
+    auto* object = data.getDynamicObject();
+    if (object == nullptr)
+        return false;
+
+    galaxy = deserialiseGalaxy (object->getProperty ("galaxy"));
+    sessionState = deepCloneVar (object->getProperty ("session"));
+    rootData = deepCloneVar (object->getProperty ("persistence"));
+    if (! rootData.isObject())
+        rootData = juce::var (new juce::DynamicObject());
+    ensureLoaded();
+    writeWorkingData();
+    return true;
+}
+
+bool PersistenceManager::deleteVoyageSlot (const juce::String& slotKey)
+{
+    slotsDir.createDirectory();
+    const auto slotFile = slotsDir.getChildFile (normaliseSlotKey (slotKey) + ".drd");
+    return ! slotFile.existsAsFile() || slotFile.deleteFile();
+}
+
+bool PersistenceManager::renameVoyageSlot (const juce::String& slotKey, const juce::String& newSlotName)
+{
+    slotsDir.createDirectory();
+    const auto currentKey = normaliseSlotKey (slotKey);
+    const auto nextKey = normaliseSlotKey (newSlotName);
+    if (nextKey.isEmpty())
+        return false;
+
+    const auto sourceFile = slotsDir.getChildFile (currentKey + ".drd");
+    if (! sourceFile.existsAsFile())
+        return false;
+
+    auto data = juce::JSON::parse (sourceFile);
+    auto* object = data.getDynamicObject();
+    if (object == nullptr)
+        return false;
+
+    object->setProperty ("slotName", newSlotName.trim().isEmpty() ? "Voyage" : newSlotName.trim());
+    object->setProperty ("slotKey", nextKey);
+
+    const auto targetFile = slotsDir.getChildFile (nextKey + ".drd");
+    if (currentKey == nextKey)
+        return sourceFile.replaceWithText (juce::JSON::toString (data, true));
+
+    if (targetFile.existsAsFile())
+        return false;
+
+    if (! targetFile.replaceWithText (juce::JSON::toString (data, true)))
+        return false;
+
+    return sourceFile.deleteFile();
+}
+
+bool PersistenceManager::getRecoverySlotSummary (SaveSlotSummary& summary)
+{
+    slotsDir.createDirectory();
+    const auto slotFile = slotsDir.getChildFile ("recovery-autosave.drd");
+    if (! slotFile.existsAsFile())
+        return false;
+
+    const auto data = juce::JSON::parse (slotFile);
+    auto* object = data.getDynamicObject();
+    if (object == nullptr)
+        return false;
+
+    summary = {};
+    summary.slotKey = object->getProperty ("slotKey").toString();
+    summary.slotName = object->getProperty ("slotName").toString();
+    summary.fileName = slotFile.getFileName();
+    summary.savedUtc = object->getProperty ("savedUtc").toString();
+    summary.isAutosave = static_cast<bool> (object->getProperty ("isAutosave"));
+
+    if (const auto* galaxyObject = object->getProperty ("galaxy").getDynamicObject(); galaxyObject != nullptr)
+    {
+        summary.galaxyName = galaxyObject->getProperty ("name").toString();
+        summary.galaxySeed = static_cast<int> (galaxyObject->getProperty ("seed"));
+        if (const auto* systems = galaxyObject->getProperty ("systems").getArray(); systems != nullptr)
+            summary.systemCount = systems->size();
+    }
+
+    if (const auto* persistenceObject = object->getProperty ("persistence").getDynamicObject(); persistenceObject != nullptr)
+    {
+        if (const auto* visitLog = persistenceObject->getProperty ("visitLog").getArray(); visitLog != nullptr)
+            summary.visitedPlanets = visitLog->size();
+    }
+
+    return true;
+}
+
+void PersistenceManager::clearWorkingData()
+{
+    rootData = juce::var (new juce::DynamicObject());
+    ensureLoaded();
+    writeWorkingData();
+}
+
 void PersistenceManager::ensureLoaded()
 {
     if (! rootData.isVoid())
@@ -373,6 +604,11 @@ void PersistenceManager::ensureLoaded()
         if (! object->hasProperty ("visitLog"))
             object->setProperty ("visitLog", juce::var (juce::Array<juce::var>()));
     }
+}
+
+void PersistenceManager::writeWorkingData()
+{
+    saveFile.replaceWithText (juce::JSON::toString (rootData, true));
 }
 
 juce::DynamicObject* PersistenceManager::getPlanetsObject()
@@ -446,6 +682,106 @@ std::unique_ptr<PlanetSurfaceState> PersistenceManager::deserialiseState (const 
                 state->setBlock (x, y, 0, 1);
 
     return state;
+}
+
+juce::var PersistenceManager::serialiseGalaxy (const GalaxyMetadata& galaxy)
+{
+    auto* galaxyObject = new juce::DynamicObject();
+    galaxyObject->setProperty ("name", galaxy.name);
+    galaxyObject->setProperty ("seed", galaxy.seed);
+
+    juce::Array<juce::var> systems;
+    systems.ensureStorageAllocated (galaxy.systems.size());
+
+    for (const auto* system : galaxy.systems)
+    {
+        auto* systemObject = new juce::DynamicObject();
+        systemObject->setProperty ("id", system->id);
+        systemObject->setProperty ("name", system->name);
+        systemObject->setProperty ("seed", system->seed);
+        systemObject->setProperty ("x", system->galaxyPosition.x);
+        systemObject->setProperty ("y", system->galaxyPosition.y);
+
+        juce::Array<juce::var> planets;
+        planets.ensureStorageAllocated (system->planets.size());
+        for (const auto* planet : system->planets)
+        {
+            auto* planetObject = new juce::DynamicObject();
+            planetObject->setProperty ("id", planet->id);
+            planetObject->setProperty ("name", planet->name);
+            planetObject->setProperty ("seed", planet->seed);
+            planetObject->setProperty ("orbitIndex", planet->orbitIndex);
+            planetObject->setProperty ("musicalRootHz", planet->musicalRootHz);
+            planetObject->setProperty ("energy", planet->energy);
+            planetObject->setProperty ("water", planet->water);
+            planetObject->setProperty ("atmosphere", planet->atmosphere);
+            planetObject->setProperty ("assignedBuildMode", buildModeToString (planet->assignedBuildMode));
+            planetObject->setProperty ("assignedPerformanceMode", performanceModeToString (planet->assignedPerformanceMode));
+            planetObject->setProperty ("accent", planet->accent.toDisplayString (true));
+            planets.add (juce::var (planetObject));
+        }
+
+        systemObject->setProperty ("planets", juce::var (planets));
+        systems.add (juce::var (systemObject));
+    }
+
+    galaxyObject->setProperty ("systems", juce::var (systems));
+    return juce::var (galaxyObject);
+}
+
+GalaxyMetadata PersistenceManager::deserialiseGalaxy (const juce::var& data)
+{
+    GalaxyMetadata galaxy;
+    auto* galaxyObject = data.getDynamicObject();
+    if (galaxyObject == nullptr)
+        return galaxy;
+
+    galaxy.name = galaxyObject->getProperty ("name").toString();
+    galaxy.seed = static_cast<int> (galaxyObject->getProperty ("seed"));
+
+    if (const auto* systems = galaxyObject->getProperty ("systems").getArray(); systems != nullptr)
+    {
+        for (const auto& systemVar : *systems)
+        {
+            auto* systemObject = systemVar.getDynamicObject();
+            if (systemObject == nullptr)
+                continue;
+
+            auto* system = galaxy.systems.add (new StarSystemMetadata());
+            system->id = systemObject->getProperty ("id").toString();
+            system->name = systemObject->getProperty ("name").toString();
+            system->seed = static_cast<int> (systemObject->getProperty ("seed"));
+            system->galaxyPosition = {
+                static_cast<float> (double (systemObject->getProperty ("x"))),
+                static_cast<float> (double (systemObject->getProperty ("y")))
+            };
+
+            if (const auto* planets = systemObject->getProperty ("planets").getArray(); planets != nullptr)
+            {
+                for (const auto& planetVar : *planets)
+                {
+                    auto* planetObject = planetVar.getDynamicObject();
+                    if (planetObject == nullptr)
+                        continue;
+
+                    auto* planet = system->planets.add (new PlanetMetadata());
+                    planet->id = planetObject->getProperty ("id").toString();
+                    planet->name = planetObject->getProperty ("name").toString();
+                    planet->seed = static_cast<int> (planetObject->getProperty ("seed"));
+                    planet->orbitIndex = static_cast<int> (planetObject->getProperty ("orbitIndex"));
+                    planet->musicalRootHz = static_cast<float> (double (planetObject->getProperty ("musicalRootHz")));
+                    planet->energy = static_cast<float> (double (planetObject->getProperty ("energy")));
+                    planet->water = static_cast<float> (double (planetObject->getProperty ("water")));
+                    planet->atmosphere = static_cast<float> (double (planetObject->getProperty ("atmosphere")));
+                    planet->assignedBuildMode = buildModeFromString (planetObject->getProperty ("assignedBuildMode").toString());
+                    planet->assignedPerformanceMode = performanceModeFromString (planetObject->getProperty ("assignedPerformanceMode").toString());
+                    planet->accent = juce::Colour::fromString (planetObject->getProperty ("accent").toString());
+                }
+            }
+        }
+    }
+
+    return galaxy;
 }
 
 GalaxyMetadata GalaxyGenerator::generateGalaxy (int seed)

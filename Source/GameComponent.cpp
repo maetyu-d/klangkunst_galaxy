@@ -844,7 +844,9 @@ void GameComponent::mouseMove (const juce::MouseEvent& event)
 {
     if (currentScene == Scene::title)
     {
-        const auto nextAction = titleActionAt (event.position, getLocalBounds().toFloat());
+        const auto nextAction = titleSlotOverlayMode == TitleSlotOverlayMode::none
+                                    ? titleActionAt (event.position, getTitleInteractionArea())
+                                    : TitleAction::none;
         if (nextAction != hoveredTitleAction)
         {
             hoveredTitleAction = nextAction;
@@ -991,12 +993,70 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
 {
     if (currentScene == Scene::title)
     {
-        switch (titleActionAt (event.position, getLocalBounds().toFloat()))
+        const auto titleArea = getTitleInteractionArea();
+        if (titleSlotOverlayMode != TitleSlotOverlayMode::none)
         {
-            case TitleAction::resumeVoyage:     if (isTitleActionEnabled (TitleAction::resumeVoyage)) setScene (Scene::galaxy); break;
-            case TitleAction::loadVoyage:       enterGalaxyFromTitle (false); break;
+            const auto overlay = getTitleSlotOverlayBounds (titleArea);
+            if (titleSlotOverlayMode == TitleSlotOverlayMode::save
+                && getTitleSlotInputBounds (overlay).contains (event.position))
+            {
+                titleSelectedSlotIndex = -1;
+                titleSlotStatusMessage = "Type a slot name, then click SAVE .DRD.";
+                repaint();
+                return;
+            }
+
+            if (titleSlotOverlayMode == TitleSlotOverlayMode::save
+                && getTitleSlotRenameBounds (overlay).contains (event.position)
+                && titleSelectedSlotIndex >= 0)
+            {
+                performTitleRenameSlot (titleSelectedSlotIndex, titleSlotNameDraft);
+                return;
+            }
+
+            if (getTitleSlotDeleteBounds (overlay).contains (event.position)
+                && titleSelectedSlotIndex >= 0)
+            {
+                performTitleDeleteSlot (titleSelectedSlotIndex);
+                return;
+            }
+
+            if (getTitleSlotConfirmBounds (overlay).contains (event.position))
+            {
+                if (titleSlotOverlayMode == TitleSlotOverlayMode::save)
+                    performTitleSaveToSlot (titleSlotNameDraft);
+                else if (titleSelectedSlotIndex >= 0)
+                    performTitleLoadFromSlot (titleSelectedSlotIndex);
+                return;
+            }
+
+            for (int i = 0; i < static_cast<int> (titleSaveSlots.size()); ++i)
+            {
+                if (! getTitleSlotRowBounds (overlay, i).contains (event.position))
+                    continue;
+
+                titleSelectedSlotIndex = i;
+                titleSlotNameDraft = titleSaveSlots[static_cast<size_t> (i)].slotName;
+
+                repaint();
+                return;
+            }
+
+            if (! overlay.contains (event.position))
+            {
+                closeTitleSlotOverlay();
+                repaint();
+            }
+
+            return;
+        }
+
+        switch (titleActionAt (event.position, titleArea))
+        {
+            case TitleAction::resumeVoyage:     if (isTitleActionEnabled (TitleAction::resumeVoyage)) setScene (resumeScene); break;
+            case TitleAction::loadVoyage:       openTitleSlotOverlay (TitleSlotOverlayMode::load); break;
             case TitleAction::newVoyage:        enterGalaxyFromTitle (true); break;
-            case TitleAction::saveVoyage:       saveActivePlanet(); break;
+            case TitleAction::saveVoyage:       openTitleSlotOverlay (TitleSlotOverlayMode::save); break;
             case TitleAction::none: break;
         }
         return;
@@ -1140,18 +1200,90 @@ void GameComponent::mouseExit (const juce::MouseEvent&)
 bool GameComponent::keyPressed (const juce::KeyPress& key)
 {
     const auto lowerChar = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
+    const auto keyCode = key.getKeyCode();
 
     if (currentScene == Scene::title)
     {
+        if (titleSlotOverlayMode != TitleSlotOverlayMode::none)
+        {
+            if (key == juce::KeyPress::escapeKey)
+            {
+                closeTitleSlotOverlay();
+                return true;
+            }
+
+            if (key == juce::KeyPress::upKey && ! titleSaveSlots.empty())
+            {
+                titleSelectedSlotIndex = juce::jlimit (0, static_cast<int> (titleSaveSlots.size()) - 1,
+                                                       titleSelectedSlotIndex <= 0 ? 0 : titleSelectedSlotIndex - 1);
+                titleSlotNameDraft = titleSaveSlots[static_cast<size_t> (titleSelectedSlotIndex)].slotName;
+                repaint();
+                return true;
+            }
+
+            if (key == juce::KeyPress::downKey && ! titleSaveSlots.empty())
+            {
+                titleSelectedSlotIndex = juce::jlimit (0, static_cast<int> (titleSaveSlots.size()) - 1,
+                                                       titleSelectedSlotIndex < 0 ? 0 : titleSelectedSlotIndex + 1);
+                titleSlotNameDraft = titleSaveSlots[static_cast<size_t> (titleSelectedSlotIndex)].slotName;
+                repaint();
+                return true;
+            }
+
+            if (key == juce::KeyPress::returnKey)
+            {
+                if (titleSlotOverlayMode == TitleSlotOverlayMode::load)
+                {
+                    if (titleSelectedSlotIndex >= 0)
+                        performTitleLoadFromSlot (titleSelectedSlotIndex);
+                }
+                else
+                {
+                    performTitleSaveToSlot (titleSlotNameDraft);
+                }
+                return true;
+            }
+
+            if (titleSlotOverlayMode == TitleSlotOverlayMode::save)
+            {
+                if (key == juce::KeyPress::backspaceKey)
+                {
+                    titleSlotNameDraft = titleSlotNameDraft.dropLastCharacters (1);
+                    repaint();
+                    return true;
+                }
+
+                if (keyCode == juce::KeyPress::deleteKey)
+                {
+                    titleSlotNameDraft.clear();
+                    repaint();
+                    return true;
+                }
+
+                if (keyCode >= 32 && keyCode < 127)
+                {
+                    const juce::String allowed ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_");
+                    if (allowed.containsChar (static_cast<juce_wchar> (keyCode)) && titleSlotNameDraft.length() < 28)
+                    {
+                        titleSlotNameDraft << juce::String::charToString (static_cast<juce_wchar> (keyCode));
+                        repaint();
+                        return true;
+                    }
+                }
+            }
+
+            return true;
+        }
+
         if (lowerChar == 'r')
         {
             if (isTitleActionEnabled (TitleAction::resumeVoyage))
-                setScene (Scene::galaxy);
+                setScene (resumeScene);
             return true;
         }
         if (key == juce::KeyPress::returnKey || key == juce::KeyPress::spaceKey || lowerChar == 'l')
         {
-            enterGalaxyFromTitle (false);
+            openTitleSlotOverlay (TitleSlotOverlayMode::load);
             return true;
         }
         if (lowerChar == 'n')
@@ -1161,7 +1293,7 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
         }
         if (lowerChar == 's')
         {
-            saveActivePlanet();
+            openTitleSlotOverlay (TitleSlotOverlayMode::save);
             return true;
         }
     }
@@ -1211,8 +1343,6 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
     }
     else if (currentScene == Scene::builder)
     {
-        const auto keyCode = key.getKeyCode();
-
         if (key == juce::KeyPress::escapeKey)
         {
             performanceMode = false;
@@ -1505,6 +1635,9 @@ const PlanetMetadata& GameComponent::getSelectedPlanet() const
 
 void GameComponent::setScene (Scene newScene)
 {
+    if (newScene != Scene::title)
+        resumeScene = newScene;
+
     currentScene = newScene;
     if (currentScene != Scene::galaxy)
         galaxyLogOpen = false;
@@ -1518,6 +1651,7 @@ void GameComponent::moveSystemSelection (int delta)
     selectedSystemIndex = (selectedSystemIndex + delta + galaxy.systems.size()) % galaxy.systems.size();
     selectedPlanetIndex = 0;
     updateMusicState();
+    queueAutosave();
     repaint();
 }
 
@@ -1526,6 +1660,7 @@ void GameComponent::movePlanetSelection (int delta)
     const auto& system = getSelectedSystem();
     selectedPlanetIndex = (selectedPlanetIndex + delta + system.planets.size()) % system.planets.size();
     updateMusicState();
+    queueAutosave();
     repaint();
 }
 
@@ -1550,6 +1685,7 @@ void GameComponent::landOnSelectedPlanet()
     isometricCamera = {};
     hasMouseAnchor = false;
     applyAssignedBuildModeForPlanet();
+    queueAutosave();
     setScene (Scene::landing);
 }
 
@@ -1567,6 +1703,7 @@ void GameComponent::enterBuilder()
     hasMouseAnchor = false;
     updateIsometricCursorFromPosition (getBuilderGridArea().getCentre().toFloat());
     applyAssignedBuildModeForPlanet();
+    queueAutosave();
     setScene (Scene::builder);
 }
 
@@ -1587,6 +1724,7 @@ void GameComponent::ensureActivePlanetLoaded()
     if (activePlanetState != nullptr && activePlanetState->planetId == planet.id)
         return;
 
+    saveActivePlanet();
     activePlanetState = persistence.loadPlanet (planet.id);
 
     if (activePlanetState == nullptr)
@@ -1599,7 +1737,10 @@ void GameComponent::ensureActivePlanetLoaded()
 void GameComponent::saveActivePlanet()
 {
     if (activePlanetState != nullptr)
+    {
         persistence.savePlanet (*activePlanetState);
+        queueAutosave();
+    }
 }
 
 void GameComponent::beginPerformanceLogSession()
@@ -1644,6 +1785,8 @@ void GameComponent::recordPerformanceMovementCell (juce::Point<int> cell, int am
 void GameComponent::updateMusicState()
 {
     const auto& planet = getSelectedPlanet();
+    const auto buildMode = planet.assignedBuildMode;
+    const auto performanceModeForPlanet = planet.assignedPerformanceMode;
     transportRate = 0.16f + 0.12f * planet.water + (currentScene == Scene::builder ? 0.08f : 0.0f);
 
     if (performanceMode && currentScene == Scene::builder)
@@ -1657,21 +1800,59 @@ void GameComponent::updateMusicState()
     }
     else if (currentScene == Scene::galaxy)
     {
-        synthEngine = planet.energy > 0.68f ? SynthEngine::digitalV4 : SynthEngine::fmGlass;
-        scaleType = planet.water > 0.52f ? ScaleType::dorian : ScaleType::major;
-        drumMode = DrumMode::forwardStep;
+        switch (performanceModeForPlanet)
+        {
+            case PlanetPerformanceMode::snakes:    synthEngine = SynthEngine::titleBloom;  scaleType = ScaleType::dorian;     drumMode = DrumMode::forwardStep; break;
+            case PlanetPerformanceMode::trains:    synthEngine = SynthEngine::digitalV4;   scaleType = ScaleType::minor;      drumMode = DrumMode::railLine;    break;
+            case PlanetPerformanceMode::ripple:    synthEngine = SynthEngine::velvetNoise; scaleType = ScaleType::pentatonic; drumMode = DrumMode::tightPulse;  break;
+            case PlanetPerformanceMode::sequencer: synthEngine = SynthEngine::fmGlass;     scaleType = ScaleType::chromatic;  drumMode = DrumMode::forwardStep; break;
+            case PlanetPerformanceMode::tenori:    synthEngine = SynthEngine::chipPulse;   scaleType = ScaleType::major;      drumMode = DrumMode::rezStraight; break;
+        }
     }
     else if (currentScene == Scene::landing)
     {
-        synthEngine = SynthEngine::velvetNoise;
-        scaleType = planet.water > 0.45f ? ScaleType::minor : ScaleType::pentatonic;
-        drumMode = DrumMode::tightPulse;
+        switch (buildMode)
+        {
+            case PlanetBuildMode::isometric:        synthEngine = SynthEngine::fmGlass;     break;
+            case PlanetBuildMode::firstPerson:      synthEngine = SynthEngine::guitarPluck; break;
+            case PlanetBuildMode::cellularAutomata: synthEngine = SynthEngine::velvetNoise; break;
+            case PlanetBuildMode::tetris:           synthEngine = SynthEngine::chipPulse;   break;
+        }
+
+        switch (performanceModeForPlanet)
+        {
+            case PlanetPerformanceMode::snakes:    scaleType = ScaleType::dorian;     drumMode = DrumMode::forwardStep; break;
+            case PlanetPerformanceMode::trains:    scaleType = ScaleType::minor;      drumMode = DrumMode::railLine;    break;
+            case PlanetPerformanceMode::ripple:    scaleType = ScaleType::pentatonic; drumMode = DrumMode::tightPulse;  break;
+            case PlanetPerformanceMode::sequencer: scaleType = ScaleType::chromatic;  drumMode = DrumMode::reactiveBreakbeat; break;
+            case PlanetPerformanceMode::tenori:    scaleType = ScaleType::major;      drumMode = DrumMode::rezStraight; break;
+        }
     }
     else
     {
-        synthEngine = SynthEngine::guitarPluck;
-        scaleType = ScaleType::minor;
-        drumMode = DrumMode::reactiveBreakbeat;
+        switch (buildMode)
+        {
+            case PlanetBuildMode::isometric:
+                synthEngine = SynthEngine::titleBloom;
+                scaleType = ScaleType::major;
+                drumMode = DrumMode::rezStraight;
+                break;
+            case PlanetBuildMode::firstPerson:
+                synthEngine = SynthEngine::guitarPluck;
+                scaleType = ScaleType::minor;
+                drumMode = DrumMode::reactiveBreakbeat;
+                break;
+            case PlanetBuildMode::cellularAutomata:
+                synthEngine = SynthEngine::velvetNoise;
+                scaleType = ScaleType::dorian;
+                drumMode = DrumMode::tightPulse;
+                break;
+            case PlanetBuildMode::tetris:
+                synthEngine = SynthEngine::chipPulse;
+                scaleType = ScaleType::pentatonic;
+                drumMode = DrumMode::railLine;
+                break;
+        }
     }
 
     performanceSynthIndex = static_cast<int> (synthEngine);
@@ -2170,10 +2351,6 @@ void GameComponent::applyPerformancePresetForPlanet()
 {
     const auto& planet = getSelectedPlanet();
     std::mt19937 rng (planet.id.hashCode());
-    std::uniform_int_distribution<int> tempoDist (96, 170);
-    std::uniform_int_distribution<int> drumDist (0, 4);
-    std::uniform_int_distribution<int> scaleDist (0, 4);
-    std::uniform_int_distribution<int> rootDist (0, 11);
     std::uniform_int_distribution<int> triggerDist (0, 1);
 
     switch (planet.assignedPerformanceMode)
@@ -2184,18 +2361,73 @@ void GameComponent::applyPerformancePresetForPlanet()
         case PlanetPerformanceMode::sequencer: performanceAgentMode = PerformanceAgentMode::sequencer; break;
         case PlanetPerformanceMode::tenori: performanceAgentMode = PerformanceAgentMode::tenori; break;
     }
-    performanceBpm = static_cast<double> (tempoDist (rng));
-    synthEngine = SynthEngine::chipPulse;
-    drumMode = static_cast<DrumMode> (drumDist (rng));
-    scaleType = static_cast<ScaleType> (scaleDist (rng));
+
+    switch (planet.assignedPerformanceMode)
+    {
+        case PlanetPerformanceMode::snakes:
+            performanceBpm = 118.0 + static_cast<double> ((planet.seed & 7) * 2);
+            synthEngine = SynthEngine::titleBloom;
+            drumMode = DrumMode::forwardStep;
+            scaleType = ScaleType::dorian;
+            break;
+        case PlanetPerformanceMode::trains:
+            performanceBpm = 132.0 + static_cast<double> ((planet.seed & 7) * 3);
+            synthEngine = SynthEngine::digitalV4;
+            drumMode = DrumMode::railLine;
+            scaleType = ScaleType::minor;
+            break;
+        case PlanetPerformanceMode::ripple:
+            performanceBpm = 102.0 + static_cast<double> ((planet.seed & 7) * 2);
+            synthEngine = SynthEngine::velvetNoise;
+            drumMode = DrumMode::tightPulse;
+            scaleType = ScaleType::pentatonic;
+            break;
+        case PlanetPerformanceMode::sequencer:
+            performanceBpm = 126.0 + static_cast<double> ((planet.seed & 7) * 2);
+            synthEngine = SynthEngine::fmGlass;
+            drumMode = DrumMode::reactiveBreakbeat;
+            scaleType = ScaleType::chromatic;
+            break;
+        case PlanetPerformanceMode::tenori:
+            performanceBpm = 112.0 + static_cast<double> ((planet.seed & 7) * 2);
+            synthEngine = SynthEngine::chipPulse;
+            drumMode = DrumMode::rezStraight;
+            scaleType = ScaleType::major;
+            break;
+    }
+
+    switch (planet.assignedBuildMode)
+    {
+        case PlanetBuildMode::isometric:
+            synthEngine = planet.assignedPerformanceMode == PlanetPerformanceMode::snakes ? synthEngine : SynthEngine::titleBloom;
+            break;
+        case PlanetBuildMode::firstPerson:
+            if (planet.assignedPerformanceMode == PlanetPerformanceMode::snakes
+                || planet.assignedPerformanceMode == PlanetPerformanceMode::sequencer)
+                synthEngine = SynthEngine::guitarPluck;
+            performanceBpm += 6.0;
+            break;
+        case PlanetBuildMode::cellularAutomata:
+            scaleType = ScaleType::dorian;
+            if (planet.assignedPerformanceMode == PlanetPerformanceMode::tenori)
+                synthEngine = SynthEngine::velvetNoise;
+            break;
+        case PlanetBuildMode::tetris:
+            if (planet.assignedPerformanceMode != PlanetPerformanceMode::ripple)
+                synthEngine = SynthEngine::chipPulse;
+            drumMode = DrumMode::railLine;
+            performanceBpm += 10.0;
+            break;
+    }
+
     performanceSynthIndex = static_cast<int> (synthEngine);
     performanceDrumIndex = static_cast<int> (drumMode);
     performanceScaleIndex = static_cast<int> (scaleType);
-    performanceKeyRoot = rootDist (rng);
+    performanceKeyRoot = getAmbientRootMidi() % 12;
     performanceRecentHitNotes.clear();
     performanceImprovCounter = 0;
     performanceLastImprovMidi = -1;
-    performanceBeatMuted = true;
+    performanceBeatMuted = planet.assignedPerformanceMode == PlanetPerformanceMode::ripple;
     snakeTriggerMode = triggerDist (rng) == 0 ? SnakeTriggerMode::headOnly : SnakeTriggerMode::wholeBody;
     beatStepAccumulator = 0.0;
     beatStepIndex = 0;
@@ -2682,6 +2914,19 @@ juce::String GameComponent::getPlanetBuildModeName (PlanetBuildMode mode) const
     return "Isometric";
 }
 
+juce::Colour GameComponent::getPlanetBuildModeColour (PlanetBuildMode mode) const
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric:         return juce::Colour::fromRGB (120, 224, 255);
+        case PlanetBuildMode::firstPerson:       return juce::Colour::fromRGB (255, 170, 92);
+        case PlanetBuildMode::cellularAutomata:  return juce::Colour::fromRGB (122, 234, 132);
+        case PlanetBuildMode::tetris:            return juce::Colour::fromRGB (255, 92, 118);
+    }
+
+    return juce::Colour::fromRGB (120, 224, 255);
+}
+
 juce::String GameComponent::getPlanetPerformanceModeName (PlanetPerformanceMode mode) const
 {
     switch (mode)
@@ -2694,6 +2939,60 @@ juce::String GameComponent::getPlanetPerformanceModeName (PlanetPerformanceMode 
     }
 
     return "Snakes";
+}
+
+juce::Colour GameComponent::getPlanetPerformanceModeColour (PlanetPerformanceMode mode) const
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes:    return juce::Colour::fromRGB (255, 212, 102);
+        case PlanetPerformanceMode::trains:    return juce::Colour::fromRGB (92, 178, 255);
+        case PlanetPerformanceMode::ripple:    return juce::Colour::fromRGB (110, 238, 255);
+        case PlanetPerformanceMode::sequencer: return juce::Colour::fromRGB (255, 126, 214);
+        case PlanetPerformanceMode::tenori:    return juce::Colour::fromRGB (198, 148, 255);
+    }
+
+    return juce::Colour::fromRGB (255, 212, 102);
+}
+
+juce::Colour GameComponent::getPlanetIdentityColour (const PlanetMetadata& planet) const
+{
+    auto modeColour = getPlanetBuildModeColour (planet.assignedBuildMode)
+                          .interpolatedWith (getPlanetPerformanceModeColour (planet.assignedPerformanceMode), 0.5f);
+    return planet.accent.interpolatedWith (modeColour, 0.55f);
+}
+
+juce::String GameComponent::getPlanetBuildModeFlavour (PlanetBuildMode mode) const
+{
+    switch (mode)
+    {
+        case PlanetBuildMode::isometric:        return "Board-built terraces and chord architecture";
+        case PlanetBuildMode::firstPerson:      return "Ground-level walking, stacking, and excavation";
+        case PlanetBuildMode::cellularAutomata: return "Self-propagating lattice growth and mutation";
+        case PlanetBuildMode::tetris:           return "Falling slabs, locks, and rhythmic fit";
+    }
+
+    return "Board-built terraces and chord architecture";
+}
+
+juce::String GameComponent::getPlanetPerformanceModeFlavour (PlanetPerformanceMode mode) const
+{
+    switch (mode)
+    {
+        case PlanetPerformanceMode::snakes:    return "Serpentine trails phrase the terrain step by step";
+        case PlanetPerformanceMode::trains:    return "Rail voices pulse in straight lines and junctions";
+        case PlanetPerformanceMode::ripple:    return "Water rings bloom outward and sing on contact";
+        case PlanetPerformanceMode::sequencer: return "Beam sweeps kink into right-angle traversals";
+        case PlanetPerformanceMode::tenori:    return "A Tenori column scans the world like a score";
+    }
+
+    return "Serpentine trails phrase the terrain step by step";
+}
+
+juce::String GameComponent::getPlanetIdentitySummary (const PlanetMetadata& planet) const
+{
+    return getPlanetBuildModeFlavour (planet.assignedBuildMode) + ". "
+         + getPlanetPerformanceModeFlavour (planet.assignedPerformanceMode) + ".";
 }
 
 void GameComponent::applyAssignedBuildModeForPlanet()
@@ -3384,6 +3683,11 @@ juce::Rectangle<float> GameComponent::titleCardBounds (juce::Rectangle<float> ar
     return area.withSizeKeepingCentre (width, height).translated (0.0f, 8.0f);
 }
 
+juce::Rectangle<float> GameComponent::getTitleInteractionArea() const
+{
+    return getLocalBounds().reduced (30).toFloat();
+}
+
 juce::Rectangle<float> GameComponent::titleButtonBounds (juce::Rectangle<float> area, int index) const
 {
     auto row = titleCardBounds (area).reduced (42.0f, 34.0f);
@@ -3436,15 +3740,649 @@ void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
 {
     if (regenerateGalaxy)
     {
+        saveActivePlanet();
         galaxy = GalaxyGenerator::generateGalaxy (juce::Random::getSystemRandom().nextInt());
+        persistence.clearWorkingData();
         selectedSystemIndex = 0;
         selectedPlanetIndex = 0;
         activePlanetState.reset();
+        builderViewMode = BuilderViewMode::isometric;
+        topDownBuildMode = TopDownBuildMode::none;
+        performanceMode = false;
+        titleSlotNameDraft = galaxy.name;
     }
 
     titleResumeAvailable = true;
     hoveredTitleAction = TitleAction::none;
+    closeTitleSlotOverlay();
+    queueAutosave();
     setScene (Scene::galaxy);
+}
+
+juce::var GameComponent::serialiseVoyageSession() const
+{
+    auto* object = new juce::DynamicObject();
+    object->setProperty ("currentScene", static_cast<int> (currentScene));
+    object->setProperty ("resumeScene", static_cast<int> (resumeScene));
+    object->setProperty ("selectedSystemIndex", selectedSystemIndex);
+    object->setProperty ("selectedPlanetIndex", selectedPlanetIndex);
+    object->setProperty ("titleResumeAvailable", titleResumeAvailable);
+    object->setProperty ("builderViewMode", static_cast<int> (builderViewMode));
+    object->setProperty ("topDownBuildMode", static_cast<int> (topDownBuildMode));
+    object->setProperty ("builderCursorX", builderCursorX);
+    object->setProperty ("builderCursorY", builderCursorY);
+    object->setProperty ("builderLayer", builderLayer);
+    object->setProperty ("isometricPlacementHeight", isometricPlacementHeight);
+    object->setProperty ("isometricChordType", static_cast<int> (isometricChordType));
+    object->setProperty ("firstPersonPlacementOffset", firstPersonPlacementOffset);
+    object->setProperty ("performanceMode", performanceMode);
+    object->setProperty ("performanceEntryView", static_cast<int> (performanceEntryView));
+    object->setProperty ("performanceEntryTopDownMode", static_cast<int> (performanceEntryTopDownMode));
+    object->setProperty ("tetrisBuildLayer", tetrisBuildLayer);
+    object->setProperty ("automataBuildLayer", automataBuildLayer);
+    object->setProperty ("performanceRegionMode", performanceRegionMode);
+    object->setProperty ("performanceAgentCount", performanceAgentCount);
+    object->setProperty ("performanceAgentMode", static_cast<int> (performanceAgentMode));
+    object->setProperty ("performancePlacementMode", static_cast<int> (performancePlacementMode));
+    object->setProperty ("performanceTrackHorizontal", performanceTrackHorizontal);
+    object->setProperty ("performanceSelectedDirectionX", performanceSelectedDirection.x);
+    object->setProperty ("performanceSelectedDirectionY", performanceSelectedDirection.y);
+    object->setProperty ("performanceTick", performanceTick);
+    object->setProperty ("performanceTenoriColumn", performanceTenoriColumn);
+    object->setProperty ("performanceBpm", performanceBpm);
+    object->setProperty ("performanceBeatMuted", performanceBeatMuted);
+    object->setProperty ("snakeTriggerMode", static_cast<int> (snakeTriggerMode));
+    object->setProperty ("synthEngine", static_cast<int> (synthEngine));
+    object->setProperty ("drumMode", static_cast<int> (drumMode));
+    object->setProperty ("scaleType", static_cast<int> (scaleType));
+    object->setProperty ("performanceKeyRoot", performanceKeyRoot);
+    object->setProperty ("performanceImprovCounter", performanceImprovCounter);
+    object->setProperty ("performanceLastImprovMidi", performanceLastImprovMidi);
+
+    auto* fp = new juce::DynamicObject();
+    fp->setProperty ("x", firstPersonState.x);
+    fp->setProperty ("y", firstPersonState.y);
+    fp->setProperty ("eyeZ", firstPersonState.eyeZ);
+    fp->setProperty ("verticalVelocity", firstPersonState.verticalVelocity);
+    fp->setProperty ("yaw", firstPersonState.yaw);
+    fp->setProperty ("pitch", firstPersonState.pitch);
+    object->setProperty ("firstPersonState", juce::var (fp));
+
+    auto* iso = new juce::DynamicObject();
+    iso->setProperty ("rotation", isometricCamera.rotation);
+    iso->setProperty ("zoom", isometricCamera.zoom);
+    iso->setProperty ("heightScale", isometricCamera.heightScale);
+    iso->setProperty ("panX", isometricCamera.panX);
+    iso->setProperty ("panY", isometricCamera.panY);
+    object->setProperty ("isometricCamera", juce::var (iso));
+
+    auto serialisePointArray = [] (const auto& points)
+    {
+        juce::Array<juce::var> array;
+        for (const auto& point : points)
+        {
+            auto* pt = new juce::DynamicObject();
+            pt->setProperty ("x", point.x);
+            pt->setProperty ("y", point.y);
+            array.add (juce::var (pt));
+        }
+        return juce::var (array);
+    };
+
+    auto serialiseSnakeArray = [&]()
+    {
+        juce::Array<juce::var> array;
+        for (const auto& snake : performanceSnakes)
+        {
+            auto* item = new juce::DynamicObject();
+            item->setProperty ("body", serialisePointArray (snake.body));
+            item->setProperty ("dirX", snake.direction.x);
+            item->setProperty ("dirY", snake.direction.y);
+            item->setProperty ("colour", snake.colour.toDisplayString (true));
+            item->setProperty ("clockwise", snake.clockwise);
+            item->setProperty ("orbitIndex", snake.orbitIndex);
+            array.add (juce::var (item));
+        }
+        return juce::var (array);
+    };
+
+    auto serialiseDiscArray = [&]()
+    {
+        juce::Array<juce::var> array;
+        for (const auto& disc : performanceDiscs)
+        {
+            auto* item = new juce::DynamicObject();
+            item->setProperty ("x", disc.cell.x);
+            item->setProperty ("y", disc.cell.y);
+            item->setProperty ("dirX", disc.direction.x);
+            item->setProperty ("dirY", disc.direction.y);
+            array.add (juce::var (item));
+        }
+        return juce::var (array);
+    };
+
+    auto serialiseTrackArray = [&]()
+    {
+        juce::Array<juce::var> array;
+        for (const auto& track : performanceTracks)
+        {
+            auto* item = new juce::DynamicObject();
+            item->setProperty ("x", track.cell.x);
+            item->setProperty ("y", track.cell.y);
+            item->setProperty ("horizontal", track.horizontal);
+            array.add (juce::var (item));
+        }
+        return juce::var (array);
+    };
+
+    auto serialiseRippleArray = [&]()
+    {
+        juce::Array<juce::var> array;
+        for (const auto& ripple : performanceRipples)
+        {
+            auto* item = new juce::DynamicObject();
+            item->setProperty ("x", ripple.centre.x);
+            item->setProperty ("y", ripple.centre.y);
+            item->setProperty ("radius", ripple.radius);
+            item->setProperty ("maxRadius", ripple.maxRadius);
+            item->setProperty ("colour", ripple.colour.toDisplayString (true));
+            array.add (juce::var (item));
+        }
+        return juce::var (array);
+    };
+
+    auto serialiseSequencerArray = [&]()
+    {
+        juce::Array<juce::var> array;
+        for (const auto& seq : performanceSequencers)
+        {
+            auto* item = new juce::DynamicObject();
+            item->setProperty ("x", seq.cell.x);
+            item->setProperty ("y", seq.cell.y);
+            item->setProperty ("dirX", seq.direction.x);
+            item->setProperty ("dirY", seq.direction.y);
+            item->setProperty ("prevX", seq.previousCell.x);
+            item->setProperty ("prevY", seq.previousCell.y);
+            item->setProperty ("hasPreviousCell", seq.hasPreviousCell);
+            item->setProperty ("colour", seq.colour.toDisplayString (true));
+            array.add (juce::var (item));
+        }
+        return juce::var (array);
+    };
+
+    auto* tetris = new juce::DynamicObject();
+    tetris->setProperty ("type", static_cast<int> (tetrisPiece.type));
+    tetris->setProperty ("rotation", tetrisPiece.rotation);
+    tetris->setProperty ("anchorX", tetrisPiece.anchor.x);
+    tetris->setProperty ("anchorY", tetrisPiece.anchor.y);
+    tetris->setProperty ("z", tetrisPiece.z);
+    tetris->setProperty ("active", tetrisPiece.active);
+    tetris->setProperty ("nextType", static_cast<int> (nextTetrisType));
+    object->setProperty ("tetrisPiece", juce::var (tetris));
+
+    if (automataHoverCell.has_value())
+    {
+        auto* hover = new juce::DynamicObject();
+        hover->setProperty ("x", automataHoverCell->x);
+        hover->setProperty ("y", automataHoverCell->y);
+        object->setProperty ("automataHoverCell", juce::var (hover));
+    }
+
+    object->setProperty ("performanceOrbitCenters", serialisePointArray (performanceOrbitCenters));
+    object->setProperty ("performanceAutomataCells", serialisePointArray (performanceAutomataCells));
+    object->setProperty ("performanceSnakes", serialiseSnakeArray());
+    object->setProperty ("performanceDiscs", serialiseDiscArray());
+    object->setProperty ("performanceTracks", serialiseTrackArray());
+    object->setProperty ("performanceRipples", serialiseRippleArray());
+    object->setProperty ("performanceSequencers", serialiseSequencerArray());
+
+    return juce::var (object);
+}
+
+void GameComponent::restoreVoyageSession (const juce::var& sessionState)
+{
+    auto* object = sessionState.getDynamicObject();
+    if (object == nullptr)
+        return;
+
+    selectedSystemIndex = juce::jlimit (0, juce::jmax (0, galaxy.systems.size() - 1),
+                                        static_cast<int> (object->getProperty ("selectedSystemIndex")));
+    selectedPlanetIndex = 0;
+    if (galaxy.systems.size() > 0)
+    {
+        const auto& system = *galaxy.systems.getUnchecked (selectedSystemIndex);
+        selectedPlanetIndex = juce::jlimit (0, juce::jmax (0, system.planets.size() - 1),
+                                            static_cast<int> (object->getProperty ("selectedPlanetIndex")));
+    }
+
+    titleResumeAvailable = static_cast<bool> (object->getProperty ("titleResumeAvailable"));
+    resumeScene = static_cast<Scene> (juce::jlimit (0, 3, static_cast<int> (object->getProperty ("resumeScene"))));
+    builderViewMode = static_cast<BuilderViewMode> (juce::jlimit (0, 1, static_cast<int> (object->getProperty ("builderViewMode"))));
+    topDownBuildMode = static_cast<TopDownBuildMode> (juce::jlimit (0, 2, static_cast<int> (object->getProperty ("topDownBuildMode"))));
+    builderCursorX = static_cast<int> (object->getProperty ("builderCursorX"));
+    builderCursorY = static_cast<int> (object->getProperty ("builderCursorY"));
+    builderLayer = static_cast<int> (object->getProperty ("builderLayer"));
+    isometricPlacementHeight = static_cast<int> (object->getProperty ("isometricPlacementHeight"));
+    isometricChordType = static_cast<IsometricChordType> (juce::jlimit (0, 7, static_cast<int> (object->getProperty ("isometricChordType"))));
+    firstPersonPlacementOffset = static_cast<int> (object->getProperty ("firstPersonPlacementOffset"));
+    performanceMode = static_cast<bool> (object->getProperty ("performanceMode"));
+    performanceEntryView = static_cast<BuilderViewMode> (juce::jlimit (0, 1, static_cast<int> (object->getProperty ("performanceEntryView"))));
+    performanceEntryTopDownMode = static_cast<TopDownBuildMode> (juce::jlimit (0, 2, static_cast<int> (object->getProperty ("performanceEntryTopDownMode"))));
+    tetrisBuildLayer = static_cast<int> (object->getProperty ("tetrisBuildLayer"));
+    automataBuildLayer = static_cast<int> (object->getProperty ("automataBuildLayer"));
+    performanceRegionMode = static_cast<int> (object->getProperty ("performanceRegionMode"));
+    performanceAgentCount = static_cast<int> (object->getProperty ("performanceAgentCount"));
+    performanceAgentMode = static_cast<PerformanceAgentMode> (juce::jlimit (0, 6, static_cast<int> (object->getProperty ("performanceAgentMode"))));
+    performancePlacementMode = static_cast<PerformancePlacementMode> (juce::jlimit (0, 2, static_cast<int> (object->getProperty ("performancePlacementMode"))));
+    performanceTrackHorizontal = static_cast<bool> (object->getProperty ("performanceTrackHorizontal"));
+    performanceSelectedDirection = {
+        static_cast<int> (object->getProperty ("performanceSelectedDirectionX")),
+        static_cast<int> (object->getProperty ("performanceSelectedDirectionY"))
+    };
+    performanceTick = static_cast<int> (object->getProperty ("performanceTick"));
+    performanceTenoriColumn = static_cast<int> (object->getProperty ("performanceTenoriColumn"));
+    performanceBpm = static_cast<double> (object->getProperty ("performanceBpm"));
+    performanceBeatMuted = static_cast<bool> (object->getProperty ("performanceBeatMuted"));
+    snakeTriggerMode = static_cast<SnakeTriggerMode> (juce::jlimit (0, 1, static_cast<int> (object->getProperty ("snakeTriggerMode"))));
+    synthEngine = static_cast<SynthEngine> (juce::jlimit (0, 5, static_cast<int> (object->getProperty ("synthEngine"))));
+    drumMode = static_cast<DrumMode> (juce::jlimit (0, 4, static_cast<int> (object->getProperty ("drumMode"))));
+    scaleType = static_cast<ScaleType> (juce::jlimit (0, 4, static_cast<int> (object->getProperty ("scaleType"))));
+    performanceKeyRoot = static_cast<int> (object->getProperty ("performanceKeyRoot"));
+    performanceImprovCounter = static_cast<int> (object->getProperty ("performanceImprovCounter"));
+    performanceLastImprovMidi = static_cast<int> (object->getProperty ("performanceLastImprovMidi"));
+    performanceSynthIndex = static_cast<int> (synthEngine);
+    performanceDrumIndex = static_cast<int> (drumMode);
+    performanceScaleIndex = static_cast<int> (scaleType);
+
+    if (const auto* fp = object->getProperty ("firstPersonState").getDynamicObject(); fp != nullptr)
+    {
+        firstPersonState.x = static_cast<float> (double (fp->getProperty ("x")));
+        firstPersonState.y = static_cast<float> (double (fp->getProperty ("y")));
+        firstPersonState.eyeZ = static_cast<float> (double (fp->getProperty ("eyeZ")));
+        firstPersonState.verticalVelocity = static_cast<float> (double (fp->getProperty ("verticalVelocity")));
+        firstPersonState.yaw = static_cast<float> (double (fp->getProperty ("yaw")));
+        firstPersonState.pitch = static_cast<float> (double (fp->getProperty ("pitch")));
+    }
+
+    if (const auto* iso = object->getProperty ("isometricCamera").getDynamicObject(); iso != nullptr)
+    {
+        isometricCamera.rotation = static_cast<int> (iso->getProperty ("rotation"));
+        isometricCamera.zoom = static_cast<float> (double (iso->getProperty ("zoom")));
+        isometricCamera.heightScale = static_cast<float> (double (iso->getProperty ("heightScale")));
+        isometricCamera.panX = static_cast<float> (double (iso->getProperty ("panX")));
+        isometricCamera.panY = static_cast<float> (double (iso->getProperty ("panY")));
+    }
+
+    auto deserialisePointArray = [] (const juce::var& value)
+    {
+        std::vector<juce::Point<int>> points;
+        if (const auto* array = value.getArray(); array != nullptr)
+        {
+            points.reserve (static_cast<size_t> (array->size()));
+            for (const auto& item : *array)
+            {
+                if (const auto* point = item.getDynamicObject(); point != nullptr)
+                    points.emplace_back (static_cast<int> (point->getProperty ("x")),
+                                         static_cast<int> (point->getProperty ("y")));
+            }
+        }
+        return points;
+    };
+
+    if (const auto* tetris = object->getProperty ("tetrisPiece").getDynamicObject(); tetris != nullptr)
+    {
+        tetrisPiece.type = static_cast<TetrominoType> (juce::jlimit (0, 6, static_cast<int> (tetris->getProperty ("type"))));
+        tetrisPiece.rotation = static_cast<int> (tetris->getProperty ("rotation"));
+        tetrisPiece.anchor = { static_cast<int> (tetris->getProperty ("anchorX")), static_cast<int> (tetris->getProperty ("anchorY")) };
+        tetrisPiece.z = static_cast<int> (tetris->getProperty ("z"));
+        tetrisPiece.active = static_cast<bool> (tetris->getProperty ("active"));
+        nextTetrisType = static_cast<TetrominoType> (juce::jlimit (0, 6, static_cast<int> (tetris->getProperty ("nextType"))));
+    }
+
+    automataHoverCell.reset();
+    if (const auto* hover = object->getProperty ("automataHoverCell").getDynamicObject(); hover != nullptr)
+        automataHoverCell = juce::Point<int> (static_cast<int> (hover->getProperty ("x")), static_cast<int> (hover->getProperty ("y")));
+
+    performanceOrbitCenters = deserialisePointArray (object->getProperty ("performanceOrbitCenters"));
+    performanceAutomataCells = deserialisePointArray (object->getProperty ("performanceAutomataCells"));
+    performanceDiscs.clear();
+    if (const auto* discs = object->getProperty ("performanceDiscs").getArray(); discs != nullptr)
+        for (const auto& item : *discs)
+            if (const auto* disc = item.getDynamicObject(); disc != nullptr)
+                performanceDiscs.push_back ({
+                    { static_cast<int> (disc->getProperty ("x")), static_cast<int> (disc->getProperty ("y")) },
+                    { static_cast<int> (disc->getProperty ("dirX")), static_cast<int> (disc->getProperty ("dirY")) }
+                });
+
+    performanceTracks.clear();
+    if (const auto* tracks = object->getProperty ("performanceTracks").getArray(); tracks != nullptr)
+        for (const auto& item : *tracks)
+            if (const auto* track = item.getDynamicObject(); track != nullptr)
+                performanceTracks.push_back ({
+                    { static_cast<int> (track->getProperty ("x")), static_cast<int> (track->getProperty ("y")) },
+                    static_cast<bool> (track->getProperty ("horizontal"))
+                });
+
+    performanceRipples.clear();
+    if (const auto* ripples = object->getProperty ("performanceRipples").getArray(); ripples != nullptr)
+        for (const auto& item : *ripples)
+            if (const auto* ripple = item.getDynamicObject(); ripple != nullptr)
+                performanceRipples.push_back ({
+                    { static_cast<int> (ripple->getProperty ("x")), static_cast<int> (ripple->getProperty ("y")) },
+                    static_cast<int> (ripple->getProperty ("radius")),
+                    static_cast<int> (ripple->getProperty ("maxRadius")),
+                    juce::Colour::fromString (ripple->getProperty ("colour").toString())
+                });
+
+    performanceSequencers.clear();
+    if (const auto* sequencers = object->getProperty ("performanceSequencers").getArray(); sequencers != nullptr)
+        for (const auto& item : *sequencers)
+            if (const auto* seq = item.getDynamicObject(); seq != nullptr)
+                performanceSequencers.push_back ({
+                    { static_cast<int> (seq->getProperty ("x")), static_cast<int> (seq->getProperty ("y")) },
+                    { static_cast<int> (seq->getProperty ("dirX")), static_cast<int> (seq->getProperty ("dirY")) },
+                    { static_cast<int> (seq->getProperty ("prevX")), static_cast<int> (seq->getProperty ("prevY")) },
+                    juce::Colour::fromString (seq->getProperty ("colour").toString()),
+                    static_cast<bool> (seq->getProperty ("hasPreviousCell"))
+                });
+
+    performanceSnakes.clear();
+    if (const auto* snakes = object->getProperty ("performanceSnakes").getArray(); snakes != nullptr)
+    {
+        for (const auto& item : *snakes)
+        {
+            const auto* snake = item.getDynamicObject();
+            if (snake == nullptr)
+                continue;
+
+            PerformanceSnake restored;
+            restored.body = deserialisePointArray (snake->getProperty ("body"));
+            restored.direction = { static_cast<int> (snake->getProperty ("dirX")), static_cast<int> (snake->getProperty ("dirY")) };
+            restored.colour = juce::Colour::fromString (snake->getProperty ("colour").toString());
+            restored.clockwise = static_cast<bool> (snake->getProperty ("clockwise"));
+            restored.orbitIndex = static_cast<int> (snake->getProperty ("orbitIndex"));
+            performanceSnakes.push_back (std::move (restored));
+        }
+    }
+
+    activePlanetState.reset();
+    const auto requestedScene = static_cast<Scene> (juce::jlimit (0, 3, static_cast<int> (object->getProperty ("currentScene"))));
+    const auto restoredScene = requestedScene == Scene::title ? resumeScene : requestedScene;
+
+    if (restoredScene == Scene::landing || restoredScene == Scene::builder)
+        ensureActivePlanetLoaded();
+
+    builderCursorX = juce::jlimit (0, juce::jmax (0, getSurfaceWidth() - 1), builderCursorX);
+    builderCursorY = juce::jlimit (0, juce::jmax (0, getSurfaceDepth() - 1), builderCursorY);
+    builderLayer = juce::jlimit (1, juce::jmax (1, getSurfaceHeight() - 1), builderLayer);
+    isometricPlacementHeight = juce::jlimit (1, 4, isometricPlacementHeight);
+    firstPersonPlacementOffset = juce::jlimit (1, juce::jmax (1, getSurfaceHeight() - 1), firstPersonPlacementOffset);
+    tetrisBuildLayer = juce::jlimit (1, juce::jmax (1, getSurfaceHeight() - 1), tetrisBuildLayer);
+    automataBuildLayer = juce::jlimit (1, juce::jmax (1, getSurfaceHeight() - 1), automataBuildLayer);
+    performanceTenoriColumn = juce::jlimit (0, juce::jmax (0, getSurfaceWidth() - 1), performanceTenoriColumn);
+    performanceAgentCount = juce::jlimit (0, 8, performanceAgentCount);
+    performanceKeyRoot = juce::jlimit (0, 11, performanceKeyRoot);
+    performanceRegionMode = juce::jlimit (0, 2, performanceRegionMode);
+    performanceBpm = juce::jlimit (60.0, 220.0, performanceBpm > 0.0 ? performanceBpm : 120.0);
+
+    setScene (restoredScene);
+    updateFirstPersonMouseCapture();
+    repaint();
+}
+
+void GameComponent::refreshTitleSaveSlots()
+{
+    titleSaveSlots = persistence.getSaveSlots();
+    hasTitleRecoverySlot = persistence.getRecoverySlotSummary (titleRecoverySlot);
+    if (titleSaveSlots.empty())
+        titleSelectedSlotIndex = -1;
+    else if (! juce::isPositiveAndBelow (titleSelectedSlotIndex, static_cast<int> (titleSaveSlots.size())))
+        titleSelectedSlotIndex = 0;
+}
+
+void GameComponent::queueAutosave()
+{
+    if (! titleResumeAvailable || galaxy.systems.isEmpty())
+        return;
+
+    autosavePending = true;
+    autosaveCountdownFrames = 45;
+    refreshTitleSaveSlots();
+}
+
+void GameComponent::performAutosave()
+{
+    if (! titleResumeAvailable || galaxy.systems.isEmpty())
+        return;
+
+    saveActivePlanet();
+    if (persistence.saveRecoveryVoyage (galaxy, serialiseVoyageSession()))
+    {
+        autosavePending = false;
+        autosaveCountdownFrames = 0;
+        hasTitleRecoverySlot = persistence.getRecoverySlotSummary (titleRecoverySlot);
+    }
+}
+
+void GameComponent::openTitleSlotOverlay (TitleSlotOverlayMode mode)
+{
+    titleSlotOverlayMode = mode;
+    refreshTitleSaveSlots();
+    titleSlotStatusMessage.clear();
+    titleArmedOverwriteSlotKey.clear();
+    titleArmedDeleteSlotKey.clear();
+    if (mode == TitleSlotOverlayMode::save)
+    {
+        titleSlotNameDraft = titleResumeAvailable ? galaxy.name : "Voyage";
+        titleSelectedSlotIndex = -1;
+    }
+    repaint();
+}
+
+void GameComponent::closeTitleSlotOverlay()
+{
+    titleSlotOverlayMode = TitleSlotOverlayMode::none;
+    titleSelectedSlotIndex = -1;
+    titleSlotStatusMessage.clear();
+    titleArmedOverwriteSlotKey.clear();
+    titleArmedDeleteSlotKey.clear();
+}
+
+bool GameComponent::performTitleSaveToSlot (juce::String slotName)
+{
+    slotName = slotName.trim();
+    if (slotName.isEmpty())
+    {
+        titleSlotStatusMessage = "Enter a slot name first.";
+        repaint();
+        return false;
+    }
+
+    const auto targetSlotKey = getSlotKeyForDraftName (slotName);
+    const bool slotExists = std::any_of (titleSaveSlots.begin(), titleSaveSlots.end(), [&] (const SaveSlotSummary& slot)
+    {
+        return slot.slotKey == targetSlotKey;
+    });
+    if (slotExists && titleArmedOverwriteSlotKey != targetSlotKey)
+    {
+        titleArmedOverwriteSlotKey = targetSlotKey;
+        titleArmedDeleteSlotKey.clear();
+        titleSlotStatusMessage = "Click SAVE .DRD again to overwrite " + slotName + ".";
+        repaint();
+        return false;
+    }
+
+    saveActivePlanet();
+    if (! persistence.saveVoyageSlot (slotName, galaxy, serialiseVoyageSession()))
+    {
+        titleSlotStatusMessage = "Save failed.";
+        repaint();
+        return false;
+    }
+
+    titleResumeAvailable = true;
+    refreshTitleSaveSlots();
+    titleSlotNameDraft = slotName;
+    closeTitleSlotOverlay();
+    titleSlotStatusMessage = "Saved to " + slotName + ".drd";
+    repaint();
+    return true;
+}
+
+bool GameComponent::performTitleLoadFromSlot (int slotIndex)
+{
+    refreshTitleSaveSlots();
+    if (! juce::isPositiveAndBelow (slotIndex, static_cast<int> (titleSaveSlots.size())))
+        return false;
+
+    GalaxyMetadata loadedGalaxy;
+    juce::var sessionState;
+    if (! persistence.loadVoyageSlot (titleSaveSlots[static_cast<size_t> (slotIndex)].slotKey, loadedGalaxy, sessionState))
+    {
+        titleSlotStatusMessage = "Load failed.";
+        repaint();
+        return false;
+    }
+
+    saveActivePlanet();
+    flushPerformanceLogSession();
+    resetPerformanceState();
+    activePlanetState.reset();
+    galaxy = std::move (loadedGalaxy);
+    restoreVoyageSession (sessionState);
+    hoveredTitleAction = TitleAction::none;
+    closeTitleSlotOverlay();
+    titleResumeAvailable = true;
+    queueAutosave();
+    return true;
+}
+
+bool GameComponent::performTitleDeleteSlot (int slotIndex)
+{
+    refreshTitleSaveSlots();
+    if (! juce::isPositiveAndBelow (slotIndex, static_cast<int> (titleSaveSlots.size())))
+        return false;
+
+    const auto slot = titleSaveSlots[static_cast<size_t> (slotIndex)];
+    if (titleArmedDeleteSlotKey != slot.slotKey)
+    {
+        titleArmedDeleteSlotKey = slot.slotKey;
+        titleArmedOverwriteSlotKey.clear();
+        titleSlotStatusMessage = "Click DELETE again to remove " + slot.slotName + ".";
+        repaint();
+        return false;
+    }
+
+    if (! persistence.deleteVoyageSlot (slot.slotKey))
+    {
+        titleSlotStatusMessage = "Delete failed.";
+        repaint();
+        return false;
+    }
+
+    refreshTitleSaveSlots();
+    titleSelectedSlotIndex = juce::jlimit (-1, static_cast<int> (titleSaveSlots.size()) - 1, titleSelectedSlotIndex);
+    titleArmedDeleteSlotKey.clear();
+    titleSlotStatusMessage = "Deleted " + slot.slotName + ".";
+    repaint();
+    return true;
+}
+
+bool GameComponent::performTitleRenameSlot (int slotIndex, juce::String newName)
+{
+    refreshTitleSaveSlots();
+    if (! juce::isPositiveAndBelow (slotIndex, static_cast<int> (titleSaveSlots.size())))
+        return false;
+
+    newName = newName.trim();
+    if (newName.isEmpty())
+    {
+        titleSlotStatusMessage = "Enter a slot name first.";
+        repaint();
+        return false;
+    }
+
+    const auto slot = titleSaveSlots[static_cast<size_t> (slotIndex)];
+    if (! persistence.renameVoyageSlot (slot.slotKey, newName))
+    {
+        titleSlotStatusMessage = "Rename failed. That slot name may already exist.";
+        repaint();
+        return false;
+    }
+
+    refreshTitleSaveSlots();
+    for (int i = 0; i < static_cast<int> (titleSaveSlots.size()); ++i)
+        if (titleSaveSlots[static_cast<size_t> (i)].slotName == newName)
+            titleSelectedSlotIndex = i;
+
+    titleArmedDeleteSlotKey.clear();
+    titleArmedOverwriteSlotKey.clear();
+    titleSlotNameDraft = newName;
+    titleSlotStatusMessage = "Renamed slot to " + newName + ".";
+    repaint();
+    return true;
+}
+
+juce::String GameComponent::getSlotKeyForDraftName (juce::String slotName) const
+{
+    slotName = slotName.trim();
+    if (slotName.isEmpty())
+        slotName = "Voyage";
+
+    juce::String key;
+    for (auto ch : slotName)
+    {
+        if (juce::CharacterFunctions::isLetterOrDigit (ch))
+            key << juce::CharacterFunctions::toLowerCase (ch);
+        else if (ch == ' ' || ch == '-' || ch == '_')
+            key << '-';
+    }
+
+    while (key.contains ("--"))
+        key = key.replace ("--", "-");
+
+    key = key.trimCharactersAtStart ("-").trimCharactersAtEnd ("-");
+    return key.isEmpty() ? "voyage" : key;
+}
+
+juce::Rectangle<float> GameComponent::getTitleSlotOverlayBounds (juce::Rectangle<float> area) const
+{
+    return area.reduced (area.getWidth() * 0.18f, area.getHeight() * 0.12f);
+}
+
+juce::Rectangle<float> GameComponent::getTitleSlotInputBounds (juce::Rectangle<float> overlay) const
+{
+    auto box = overlay.reduced (28.0f, 24.0f);
+    box.removeFromTop (84.0f);
+    return box.removeFromTop (56.0f);
+}
+
+juce::Rectangle<float> GameComponent::getTitleSlotConfirmBounds (juce::Rectangle<float> overlay) const
+{
+    auto box = getTitleSlotInputBounds (overlay);
+    return box.removeFromRight (170.0f).reduced (0.0f, 8.0f);
+}
+
+juce::Rectangle<float> GameComponent::getTitleSlotRenameBounds (juce::Rectangle<float> overlay) const
+{
+    auto box = getTitleSlotInputBounds (overlay);
+    return box.removeFromRight (358.0f).withTrimmedLeft (180.0f).reduced (0.0f, 8.0f);
+}
+
+juce::Rectangle<float> GameComponent::getTitleSlotDeleteBounds (juce::Rectangle<float> overlay) const
+{
+    auto box = getTitleSlotInputBounds (overlay);
+    return box.removeFromRight (546.0f).withTrimmedLeft (368.0f).reduced (0.0f, 8.0f);
+}
+
+juce::Rectangle<float> GameComponent::getTitleSlotRowBounds (juce::Rectangle<float> overlay, int index) const
+{
+    auto list = overlay.reduced (28.0f, 24.0f);
+    list.removeFromTop (titleSlotOverlayMode == TitleSlotOverlayMode::save ? 152.0f : 84.0f);
+    const float gap = 10.0f;
+    const float rowHeight = 74.0f;
+    list.removeFromTop ((rowHeight + gap) * static_cast<float> (index));
+    return list.removeFromTop (rowHeight);
 }
 
 void GameComponent::drawHeader (juce::Graphics& g, juce::Rectangle<int> area)
@@ -3786,8 +4724,8 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     const std::array<juce::String, 4> captions {
         "Return to the current voyage and continue charting the galaxy.",
         "Generate a fresh seeded cosmos and begin a new voyage.",
-        "Load the current seeded galaxy and begin navigating star systems.",
-        "Save the current galaxy and any planetary changes."
+        "Open a named .drd save slot and restore the full voyage.",
+        "Write the current galaxy, planet states, and logs into a named .drd slot."
     };
     for (size_t i = 0; i < actions.size(); ++i)
     {
@@ -3890,9 +4828,185 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     g.fillRoundedRectangle (footerCloud.reduced (18.0f, 6.0f).withHeight (8.0f), 6.0f);
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 220));
     g.setFont (juce::FontOptions (13.0f));
-    g.drawText ("Resume returns to your voyage   Load enters the current galaxy   New starts fresh   Save preserves the current voyage",
+    g.drawText ("Resume returns to your voyage   New starts fresh   Load restores a .drd slot   Save writes the current voyage",
                 footerCloud.toNearestInt(),
                 juce::Justification::centred);
+
+    if (hasTitleRecoverySlot)
+    {
+        auto autosaveBand = footerCloud.translated (0.0f, -34.0f).withHeight (24.0f);
+        g.setColour (juce::Colour::fromRGBA (18, 26, 58, 182));
+        g.fillRoundedRectangle (autosaveBand, 10.0f);
+        g.setColour (juce::Colour::fromRGBA (138, 228, 255, 96));
+        g.drawRoundedRectangle (autosaveBand, 10.0f, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (220, 236, 255, 214));
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawText ("Last autosave: " + titleRecoverySlot.savedUtc + "   |   " + titleRecoverySlot.galaxyName,
+                    autosaveBand.toNearestInt(), juce::Justification::centred);
+    }
+
+    if (titleSlotOverlayMode != TitleSlotOverlayMode::none)
+    {
+        g.setColour (juce::Colour::fromRGBA (4, 8, 20, 168));
+        g.fillRoundedRectangle (area.toFloat().reduced (8.0f), 28.0f);
+
+        auto overlay = getTitleSlotOverlayBounds (area.toFloat());
+        drawPanel (g, overlay.toNearestInt(), juce::Colour::fromRGBA (116, 224, 255, 220));
+
+        auto inner = overlay.reduced (28.0f, 24.0f);
+        auto header = inner.removeFromTop (52.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
+        g.drawText (titleSlotOverlayMode == TitleSlotOverlayMode::load ? "LOAD VOYAGE" : "SAVE VOYAGE",
+                    header.toNearestInt(), juce::Justification::centredLeft);
+        g.setColour (juce::Colour::fromRGBA (210, 228, 255, 180));
+        g.setFont (juce::FontOptions (13.5f));
+        g.drawText (titleSlotOverlayMode == TitleSlotOverlayMode::load
+                        ? "Choose a named .drd slot to restore the full voyage."
+                        : "Type a slot name or pick an existing .drd slot to overwrite.",
+                    inner.removeFromTop (24.0f).toNearestInt(), juce::Justification::centredLeft);
+        if (hasTitleRecoverySlot)
+        {
+            g.setColour (juce::Colour::fromRGBA (220, 236, 255, 200));
+            g.setFont (juce::FontOptions (12.5f));
+            g.drawText ("Last autosave: " + titleRecoverySlot.savedUtc + "   |   " + titleRecoverySlot.galaxyName,
+                        inner.removeFromTop (18.0f).toNearestInt(), juce::Justification::centredLeft);
+        }
+
+        if (titleSlotOverlayMode == TitleSlotOverlayMode::save)
+        {
+            auto inputRow = inner.removeFromTop (62.0f);
+            auto inputBounds = inputRow.removeFromLeft (inputRow.getWidth() - 558.0f).reduced (0.0f, 6.0f);
+            auto renameBounds = getTitleSlotRenameBounds (overlay);
+            auto deleteBounds = getTitleSlotDeleteBounds (overlay);
+            auto confirmBounds = getTitleSlotConfirmBounds (overlay);
+            g.setColour (juce::Colour::fromRGBA (10, 18, 44, 220));
+            g.fillRoundedRectangle (inputBounds, 12.0f);
+            g.setColour (juce::Colour::fromRGBA (112, 214, 255, 120));
+            g.drawRoundedRectangle (inputBounds, 12.0f, 1.5f);
+            g.setColour (juce::Colour::fromRGBA (196, 214, 240, 150));
+            g.setFont (juce::FontOptions (12.0f));
+            g.drawText ("Slot name", inputBounds.removeFromTop (16.0f).toNearestInt(), juce::Justification::centredLeft);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+            g.drawText (titleSlotNameDraft.isEmpty() ? "Voyage" : titleSlotNameDraft,
+                        inputBounds.reduced (12.0f, 8.0f).toNearestInt(), juce::Justification::centredLeft);
+
+            const auto drawActionButton = [&] (juce::Rectangle<float> bounds, juce::String label, juce::Colour fill, juce::Colour outline)
+            {
+                g.setColour (fill);
+                g.fillRoundedRectangle (bounds, 12.0f);
+                g.setColour (outline);
+                g.drawRoundedRectangle (bounds, 12.0f, 1.6f);
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+                g.drawText (label, bounds.toNearestInt(), juce::Justification::centred);
+            };
+
+            drawActionButton (renameBounds,
+                              titleSelectedSlotIndex >= 0 ? "RENAME" : "RENAME",
+                              titleSelectedSlotIndex >= 0 ? juce::Colour::fromRGBA (62, 108, 184, 236)
+                                                          : juce::Colour::fromRGBA (62, 78, 112, 178),
+                              juce::Colour::fromRGBA (138, 228, 255, titleSelectedSlotIndex >= 0 ? 200 : 80));
+
+            const auto deleteSlotKey = titleSelectedSlotIndex >= 0 ? titleSaveSlots[static_cast<size_t> (titleSelectedSlotIndex)].slotKey : juce::String();
+            drawActionButton (deleteBounds,
+                              titleArmedDeleteSlotKey == deleteSlotKey && ! deleteSlotKey.isEmpty() ? "CONFIRM DELETE" : "DELETE",
+                              titleSelectedSlotIndex >= 0 ? juce::Colour::fromRGBA (140, 44, 62, 232)
+                                                          : juce::Colour::fromRGBA (82, 52, 62, 178),
+                              juce::Colour::fromRGBA (255, 176, 176, titleSelectedSlotIndex >= 0 ? 184 : 80));
+
+            const auto overwriteKey = getSlotKeyForDraftName (titleSlotNameDraft);
+            const bool overwriteArmed = titleArmedOverwriteSlotKey == overwriteKey;
+            g.setColour (overwriteArmed ? juce::Colour::fromRGBA (196, 112, 52, 240)
+                                        : juce::Colour::fromRGBA (36, 84, 162, 236));
+            g.fillRoundedRectangle (confirmBounds, 12.0f);
+            g.setColour (overwriteArmed ? juce::Colour::fromRGBA (255, 220, 164, 210)
+                                        : juce::Colour::fromRGBA (138, 228, 255, 200));
+            g.drawRoundedRectangle (confirmBounds, 12.0f, 1.6f);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+            g.drawText (overwriteArmed ? "CONFIRM OVERWRITE" : "SAVE .DRD", confirmBounds.toNearestInt(), juce::Justification::centred);
+        }
+        else
+        {
+            inner.removeFromTop (62.0f);
+            auto loadBounds = getTitleSlotConfirmBounds (overlay);
+            auto deleteBounds = getTitleSlotDeleteBounds (overlay);
+            const auto deleteSlotKey = titleSelectedSlotIndex >= 0 ? titleSaveSlots[static_cast<size_t> (titleSelectedSlotIndex)].slotKey : juce::String();
+            g.setColour (titleSelectedSlotIndex >= 0 ? juce::Colour::fromRGBA (36, 84, 162, 236)
+                                                     : juce::Colour::fromRGBA (62, 78, 112, 178));
+            g.fillRoundedRectangle (loadBounds, 12.0f);
+            g.setColour (juce::Colour::fromRGBA (138, 228, 255, titleSelectedSlotIndex >= 0 ? 200 : 80));
+            g.drawRoundedRectangle (loadBounds, 12.0f, 1.6f);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+            g.drawText ("LOAD .DRD", loadBounds.toNearestInt(), juce::Justification::centred);
+
+            g.setColour (titleSelectedSlotIndex >= 0 ? juce::Colour::fromRGBA (140, 44, 62, 232)
+                                                     : juce::Colour::fromRGBA (82, 52, 62, 178));
+            g.fillRoundedRectangle (deleteBounds, 12.0f);
+            g.setColour (juce::Colour::fromRGBA (255, 176, 176, titleSelectedSlotIndex >= 0 ? 184 : 80));
+            g.drawRoundedRectangle (deleteBounds, 12.0f, 1.6f);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+            g.drawText (titleArmedDeleteSlotKey == deleteSlotKey && ! deleteSlotKey.isEmpty() ? "CONFIRM DELETE" : "DELETE",
+                        deleteBounds.toNearestInt(), juce::Justification::centred);
+        }
+
+        inner.removeFromTop (10.0f);
+        if (titleSaveSlots.empty())
+        {
+            auto empty = inner.removeFromTop (92.0f);
+            g.setColour (juce::Colour::fromRGBA (16, 24, 56, 190));
+            g.fillRoundedRectangle (empty, 14.0f);
+            g.setColour (juce::Colour::fromRGBA (210, 228, 255, 216));
+            g.setFont (juce::FontOptions (17.0f));
+            g.drawText (titleSlotOverlayMode == TitleSlotOverlayMode::load
+                            ? "No .drd save slots yet."
+                            : "No save slots yet. Enter a name above to create one.",
+                        empty.toNearestInt(), juce::Justification::centred);
+        }
+        else
+        {
+            const float rowGap = 10.0f;
+            for (int i = 0; i < static_cast<int> (titleSaveSlots.size()) && i < 6; ++i)
+            {
+                auto row = getTitleSlotRowBounds (overlay, i);
+                const auto& slot = titleSaveSlots[static_cast<size_t> (i)];
+                const bool selected = i == titleSelectedSlotIndex;
+                g.setColour (selected ? juce::Colour::fromRGBA (255, 192, 120, 82)
+                                      : juce::Colour::fromRGBA (10, 18, 44, 192));
+                g.fillRoundedRectangle (row, 12.0f);
+                g.setColour (selected ? juce::Colour::fromRGBA (255, 216, 144, 214)
+                                      : juce::Colour::fromRGBA (112, 214, 255, 110));
+                g.drawRoundedRectangle (row, 12.0f, selected ? 1.8f : 1.2f);
+
+                auto text = row.reduced (16.0f, 10.0f);
+                auto top = text.removeFromTop (24.0f);
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
+                g.drawText (slot.slotName + "   ." + "drd", top.toNearestInt(), juce::Justification::centredLeft);
+                g.setColour (juce::Colour::fromRGBA (205, 222, 245, 198));
+                g.setFont (juce::FontOptions (13.5f));
+                g.drawText (slot.galaxyName + "   systems " + juce::String (slot.systemCount)
+                                + "   visited " + juce::String (slot.visitedPlanets)
+                                + "   saved " + slot.savedUtc,
+                            text.toNearestInt(), juce::Justification::centredLeft);
+
+                if (i + 1 < static_cast<int> (titleSaveSlots.size()))
+                    inner.removeFromTop (rowGap);
+            }
+        }
+
+        if (! titleSlotStatusMessage.isEmpty())
+        {
+            auto footer = overlay.removeFromBottom (42.0f).reduced (26.0f, 4.0f);
+            g.setColour (juce::Colour::fromRGBA (210, 228, 255, 214));
+            g.setFont (juce::FontOptions (13.0f));
+            g.drawText (titleSlotStatusMessage, footer.toNearestInt(), juce::Justification::centredLeft);
+        }
+    }
 }
 
 void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area)
@@ -3919,6 +5033,8 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
 
     auto mapFloat = mapArea.toFloat();
     const auto& system = getSelectedSystem();
+    const auto& selectedPlanet = getSelectedPlanet();
+    const auto identityColour = getPlanetIdentityColour (selectedPlanet);
     const auto selectedPoint = juce::Point<float> (static_cast<float> (mapArea.getX()) + system.galaxyPosition.x * static_cast<float> (mapArea.getWidth()),
                                                    static_cast<float> (mapArea.getY()) + system.galaxyPosition.y * static_cast<float> (mapArea.getHeight()));
     juce::ColourGradient mapWash (juce::Colour::fromRGBA (26, 42, 96, 178),
@@ -3926,7 +5042,8 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
                                   juce::Colour::fromRGBA (8, 16, 46, 34),
                                   mapFloat.getRight(), mapFloat.getBottom(),
                                   false);
-    mapWash.addColour (0.40, juce::Colour::fromRGBA (24, 88, 188, 74));
+    auto mapIdentity = identityColour.withMultipliedSaturation (1.1f).withAlpha (0.22f);
+    mapWash.addColour (0.40, mapIdentity);
     g.setGradientFill (mapWash);
     g.fillRoundedRectangle (mapFloat.reduced (8.0f), 18.0f);
 
@@ -3937,7 +5054,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         const float h = mapFloat.getHeight() * (0.12f + 0.09f * static_cast<float> (i));
         travelRings.addEllipse (juce::Rectangle<float> (w, h).withCentre (selectedPoint));
     }
-    g.setColour (juce::Colour::fromRGBA (126, 220, 255, 34));
+    g.setColour (identityColour.withAlpha (0.16f));
     g.strokePath (travelRings, juce::PathStrokeType (1.1f));
 
     fillGlow (g, juce::Rectangle<float> (mapArea.getX() + mapArea.getWidth() * 0.4f,
@@ -3961,7 +5078,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
                                          selectedPoint.y - mapArea.getHeight() * 0.18f,
                                          mapArea.getWidth() * 0.40f,
                                          mapArea.getHeight() * 0.36f),
-              juce::Colour::fromRGB (128, 214, 255), 0.12f);
+              identityColour, 0.14f);
 
     juce::Random farDust (0x47614C41);
     for (int i = 0; i < 170; ++i)
@@ -4117,7 +5234,9 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     g.drawRoundedRectangle (detailChip, 8.0f, 1.1f);
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (12.0f * uiScale));
-    g.drawFittedText ("Travel the seeded galaxy   Arrows drift between systems and planets   Enter descends when you find a world worth landing on",
+    g.drawFittedText ("Chart routes through " + selectedPlanet.name + "'s sector   "
+                      + getPlanetBuildModeName (selectedPlanet.assignedBuildMode) + " worlds shape differently   "
+                      + getPlanetPerformanceModeName (selectedPlanet.assignedPerformanceMode) + " worlds sound differently",
                       detailChip.reduced (14.0f, 6.0f).toNearestInt(),
                       juce::Justification::centredLeft, 2);
 
@@ -4146,12 +5265,12 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     statRowA.removeFromLeft (statGap);
     drawStat (statRowA.removeFromLeft (statWidthA), "PLANET", juce::String (selectedPlanetIndex + 1) + "/" + juce::String (system.planets.size()));
     statRowA.removeFromLeft (statGap);
-    drawStat (statRowA.removeFromLeft (statWidthA), "KEY", getNoteNameForLayer (1));
+    drawStat (statRowA.removeFromLeft (statWidthA), "MODE", getPlanetBuildModeName (selectedPlanet.assignedBuildMode));
 
     inner.removeFromTop (8.0f * uiScale);
     auto statRowB = inner.removeFromTop (54.0f * uiScale);
     const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
-    drawStat (statRowB.removeFromLeft (statWidthB), "RANGE", juce::String (juce::roundToInt (system.galaxyPosition.getDistanceFrom ({ 0.5f, 0.5f }) * 100.0f)) + "% rim");
+    drawStat (statRowB.removeFromLeft (statWidthB), "PERF", getPlanetPerformanceModeName (selectedPlanet.assignedPerformanceMode));
     statRowB.removeFromLeft (statGap);
     drawStat (statRowB.removeFromLeft (statWidthB), "DISCOVERY", juce::String (juce::roundToInt ((system.planets.size() / 7.0f) * 100.0f)) + "%");
 
@@ -4211,9 +5330,10 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
         g.drawFittedText (planet.name, text.removeFromTop (15.0f * uiScale).toNearestInt(), juce::Justification::centredLeft, 1);
         g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
         g.setFont (juce::FontOptions (11.0f * uiScale));
-        g.drawFittedText ("water " + juce::String (planet.water, 2) + "   energy " + juce::String (planet.energy, 2)
-                          + "   build " + getPlanetBuildModeName (planet.assignedBuildMode)
-                          + "   perf " + getPlanetPerformanceModeName (planet.assignedPerformanceMode),
+        g.drawFittedText (getPlanetBuildModeName (planet.assignedBuildMode)
+                          + " / " + getPlanetPerformanceModeName (planet.assignedPerformanceMode)
+                          + "   water " + juce::String (planet.water, 2)
+                          + "   energy " + juce::String (planet.energy, 2),
                           text.toNearestInt(), juce::Justification::centredLeft, 1);
         listArea.removeFromTop (6.0f * uiScale);
     }
@@ -4226,7 +5346,8 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     g.drawRoundedRectangle (footerRow, 8.0f, 1.0f);
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
     g.setFont (juce::FontOptions (11.5f * uiScale));
-    g.drawFittedText ("Now charting  " + system.name + " / " + getSelectedPlanet().name + "   Enter descends   surfaces only resolve when you commit to landing",
+    g.drawFittedText ("Now charting  " + system.name + " / " + selectedPlanet.name + "   "
+                      + getPlanetIdentitySummary (selectedPlanet),
                       footerRow.reduced (12.0f, 6.0f).toNearestInt(), juce::Justification::centredLeft, 2);
 }
 
@@ -4508,6 +5629,9 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
 {
     ensureActivePlanetLoaded();
     const auto& planet = getSelectedPlanet();
+    const auto buildColour = getPlanetBuildModeColour (planet.assignedBuildMode);
+    const auto performanceColour = getPlanetPerformanceModeColour (planet.assignedPerformanceMode);
+    const auto identityColour = getPlanetIdentityColour (planet);
 
     auto left = area.removeFromLeft (area.proportionOfWidth (0.50f)).reduced (8);
     auto right = area.reduced (12);
@@ -4537,14 +5661,15 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     drawReferencePanel (left);
     drawReferencePanel (right);
 
-    juce::ColourGradient sky (planet.accent.interpolatedWith (juce::Colour (0xffffc07b), 0.42f),
+    juce::ColourGradient sky (identityColour.interpolatedWith (juce::Colour (0xffffc07b), 0.28f),
                               left.getX() + left.getWidth() * 0.62f,
                               static_cast<float> (left.getY()),
                               juce::Colour (0xff040303),
                               static_cast<float> (left.getX()),
                               static_cast<float> (left.getBottom()),
                               false);
-    sky.addColour (0.52, activePlanetState->skyColour.darker (0.55f));
+    sky.addColour (0.34, buildColour.withAlpha (0.30f));
+    sky.addColour (0.52, activePlanetState->skyColour.interpolatedWith (performanceColour, 0.22f).darker (0.45f));
     g.setGradientFill (sky);
     g.fillRoundedRectangle (left.toFloat(), 22.0f);
 
@@ -4552,8 +5677,8 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
                                          left.getY() + 18.0f,
                                          left.getWidth() * 0.44f,
                                          left.getWidth() * 0.44f),
-              juce::Colour (0xffffd1a0), 0.36f);
-    g.setColour (planet.accent.interpolatedWith (juce::Colour (0xffffd09a), 0.45f));
+              performanceColour.interpolatedWith (juce::Colour (0xffffd1a0), 0.46f), 0.36f);
+    g.setColour (identityColour.interpolatedWith (juce::Colour (0xffffd09a), 0.28f));
     g.fillEllipse (left.getCentreX() - 70.0f, left.getY() + 40.0f, 140.0f, 140.0f);
 
     juce::Path ridge;
@@ -4569,7 +5694,7 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     g.setColour (juce::Colour (0xee050403));
     g.fillPath (ridge);
 
-    g.setColour (juce::Colour (0x28ffdcb2));
+    g.setColour (buildColour.withAlpha (0.18f));
     g.strokePath (ridge, juce::PathStrokeType (1.2f), juce::AffineTransform::translation (0.0f, -2.0f));
 
     g.setColour (juce::Colour (0x90000000));
@@ -4580,7 +5705,7 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     g.drawText (planet.name + " approach", left.removeFromBottom (88), juce::Justification::centred);
 
     g.setFont (16.0f);
-    g.drawText ("Surface voxels are now resident in memory and persistent on disk.",
+    g.drawText (getPlanetIdentitySummary (planet),
                 left.removeFromBottom (40).reduced (18, 0), juce::Justification::centred, true);
 
     auto inner = right.toFloat().reduced (16.0f * uiScale, 16.0f * uiScale);
@@ -4619,7 +5744,8 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     g.drawRoundedRectangle (detailChip, 8.0f, 1.1f);
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (12.0f * uiScale));
-    g.drawFittedText ("Enter descends into the builder   Esc returns to the galaxy   landed planets stay persistent",
+    g.drawFittedText ("Enter descends into " + getPlanetBuildModeName (planet.assignedBuildMode).toLowerCase()
+                      + " build   Esc returns to the galaxy   P later enters " + getPlanetPerformanceModeName (planet.assignedPerformanceMode).toLowerCase(),
                       detailChip.reduced (14.0f, 6.0f).toNearestInt(), juce::Justification::centredLeft, 2);
 
     inner.removeFromTop (10.0f * uiScale);
@@ -4642,18 +5768,18 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     const float statGap = 10.0f * uiScale;
     auto statRowA = inner.removeFromTop (54.0f * uiScale);
     const float statWidthA = (statRowA.getWidth() - statGap * 2.0f) / 3.0f;
-    drawStat (statRowA.removeFromLeft (statWidthA), "BUILD", "APPROACH");
+    drawStat (statRowA.removeFromLeft (statWidthA), "BUILD", getPlanetBuildModeName (planet.assignedBuildMode));
     statRowA.removeFromLeft (statGap);
-    drawStat (statRowA.removeFromLeft (statWidthA), "PLACE", "VOXEL");
+    drawStat (statRowA.removeFromLeft (statWidthA), "PERF", getPlanetPerformanceModeName (planet.assignedPerformanceMode));
     statRowA.removeFromLeft (statGap);
     drawStat (statRowA.removeFromLeft (statWidthA), "KEY", getNoteNameForLayer (1));
 
     inner.removeFromTop (8.0f * uiScale);
     auto statRowB = inner.removeFromTop (54.0f * uiScale);
     const float statWidthB = (statRowB.getWidth() - statGap) / 2.0f;
-    drawStat (statRowB.removeFromLeft (statWidthB), "SCALE", "Chromatic");
+    drawStat (statRowB.removeFromLeft (statWidthB), "SCALE", getPerformanceScaleName());
     statRowB.removeFromLeft (statGap);
-    drawStat (statRowB.removeFromLeft (statWidthB), "SYNTH", "Landing");
+    drawStat (statRowB.removeFromLeft (statWidthB), "SYNTH", getPerformanceSynthName());
 
     inner.removeFromTop (10.0f * uiScale);
     auto drawInfoChip = [&] (juce::Rectangle<float> bounds, const juce::String& text)
@@ -4688,7 +5814,9 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
 
     inner.removeFromTop (10.0f * uiScale);
     auto bodyChip = inner.removeFromTop (68.0f * uiScale);
-    drawInfoChip (bodyChip, "Landing is the seam between galaxy metadata and a concrete planet volume. If you built here before, the voxel stack has already been restored.");
+    drawInfoChip (bodyChip, getPlanetBuildModeFlavour (planet.assignedBuildMode)
+                            + ". " + getPlanetPerformanceModeFlavour (planet.assignedPerformanceMode)
+                            + ". If you built here before, the resident voxel stack has already been restored.");
 
     inner.removeFromTop (10.0f * uiScale);
     auto preview = inner.removeFromTop (juce::jmin (220.0f * uiScale, inner.getHeight() - 52.0f * uiScale)).toNearestInt().reduced (6);
@@ -7056,6 +8184,12 @@ void GameComponent::timerCallback()
 
     if (performanceBeatEnergy > 0.0f)
         performanceBeatEnergy *= 0.94f;
+
+    if (autosavePending)
+    {
+        if (--autosaveCountdownFrames <= 0)
+            performAutosave();
+    }
 
     if (currentScene == Scene::builder && performanceMode)
     {

@@ -79,6 +79,19 @@ struct VisitLogEntry
     std::vector<int> performanceNoteHeat;
 };
 
+struct SaveSlotSummary
+{
+    juce::String slotKey;
+    juce::String slotName;
+    juce::String fileName;
+    juce::String savedUtc;
+    juce::String galaxyName;
+    int galaxySeed = 0;
+    int systemCount = 0;
+    int visitedPlanets = 0;
+    bool isAutosave = false;
+};
+
 struct PlanetSurfaceState
 {
     static constexpr int maxWidth = 32;
@@ -113,16 +126,31 @@ public:
                                     const std::vector<int>& triggerHeat,
                                     const std::vector<int>& noteHeat);
     std::vector<VisitLogEntry> getVisitLog();
+    std::vector<SaveSlotSummary> getSaveSlots();
+    bool saveVoyageSlot (const juce::String& slotName, const GalaxyMetadata& galaxy, const juce::var& sessionState);
+    bool saveRecoveryVoyage (const GalaxyMetadata& galaxy, const juce::var& sessionState);
+    bool loadVoyageSlot (const juce::String& slotKey, GalaxyMetadata& galaxy, juce::var& sessionState);
+    bool deleteVoyageSlot (const juce::String& slotKey);
+    bool renameVoyageSlot (const juce::String& slotKey, const juce::String& newSlotName);
+    bool getRecoverySlotSummary (SaveSlotSummary& summary);
+    void clearWorkingData();
 
 private:
+    juce::File baseDir;
+    juce::File slotsDir;
     juce::File saveFile;
     juce::var rootData;
 
     void ensureLoaded();
     juce::DynamicObject* getPlanetsObject();
     juce::Array<juce::var>* getVisitLogArray();
+    void writeWorkingData();
+    bool writeVoyageSlotFile (const juce::File& slotFile, const juce::String& slotKey, const juce::String& slotName,
+                              bool isAutosave, const GalaxyMetadata& galaxy, const juce::var& sessionState);
     static juce::var serialiseState (const PlanetSurfaceState& state);
     static std::unique_ptr<PlanetSurfaceState> deserialiseState (const juce::String& id, const juce::var& data);
+    static juce::var serialiseGalaxy (const GalaxyMetadata& galaxy);
+    static GalaxyMetadata deserialiseGalaxy (const juce::var& data);
 };
 
 class GalaxyGenerator
