@@ -338,6 +338,7 @@ private:
     int isometricPlacementHeight = 1;
     IsometricChordType isometricChordType = IsometricChordType::single;
     int firstPersonPlacementOffset = 1;
+    float firstPersonBuildCharge = 8.0f;
     bool performanceMode = false;
     BuilderViewMode performanceEntryView = BuilderViewMode::isometric;
     TopDownBuildMode performanceEntryTopDownMode = TopDownBuildMode::none;
@@ -346,8 +347,13 @@ private:
     int tetrisBuildLayer = 1;
     int tetrisGravityTick = 0;
     int tetrisGravityFrames = 8;
+    int tetrisLinesCleared = 0;
+    int tetrisCombo = 0;
     int automataBuildLayer = 1;
     std::optional<juce::Point<int>> automataHoverCell;
+    int automataLastBirthCount = 0;
+    int automataLastSurvivalCount = 0;
+    int automataLastBrushCells = 1;
     int performanceRegionMode = 2;
     int performanceAgentCount = 1;
     PerformanceAgentMode performanceAgentMode = PerformanceAgentMode::snakes;

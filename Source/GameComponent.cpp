@@ -1805,11 +1805,17 @@ void GameComponent::landOnSelectedPlanet()
     isometricPlacementHeight = 1;
     isometricChordType = IsometricChordType::single;
     firstPersonPlacementOffset = 1;
+    firstPersonBuildCharge = 8.0f;
     tetrisPiece = {};
     nextTetrisType = TetrominoType::L;
     tetrisBuildLayer = 1;
+    tetrisLinesCleared = 0;
+    tetrisCombo = 0;
     automataBuildLayer = 1;
     automataHoverCell = {};
+    automataLastBirthCount = 0;
+    automataLastSurvivalCount = 0;
+    automataLastBrushCells = 1;
     isometricCamera = {};
     hasMouseAnchor = false;
     applyAssignedBuildModeForPlanet();
@@ -1823,11 +1829,17 @@ void GameComponent::enterBuilder()
     performanceMode = false;
     applyPerformancePresetForPlanet();
     firstPersonPlacementOffset = 1;
+    firstPersonBuildCharge = 8.0f;
     tetrisPiece = {};
     nextTetrisType = TetrominoType::L;
     tetrisBuildLayer = 1;
+    tetrisLinesCleared = 0;
+    tetrisCombo = 0;
     automataBuildLayer = 1;
     automataHoverCell = {};
+    automataLastBirthCount = 0;
+    automataLastSurvivalCount = 0;
+    automataLastBrushCells = 1;
     hasMouseAnchor = false;
     if (shouldRecenterIsometricOnEntry)
         resetIsometricCameraForCurrentPlanet();
@@ -3743,6 +3755,13 @@ void GameComponent::placeTetrisPiece (bool filled)
         return;
 
     const auto intervals = getActiveChordStackIntervals();
+    std::vector<int> affectedLayers;
+    affectedLayers.reserve (intervals.size());
+    for (const int interval : intervals)
+        affectedLayers.push_back (juce::jlimit (1, getSurfaceHeight() - 1, tetrisPiece.z + interval));
+    std::sort (affectedLayers.begin(), affectedLayers.end());
+    affectedLayers.erase (std::unique (affectedLayers.begin(), affectedLayers.end()), affectedLayers.end());
+
     for (const auto& cell : getTetrisPlacementCells (tetrisPiece))
     {
         for (const int interval : intervals)
@@ -3750,6 +3769,73 @@ void GameComponent::placeTetrisPiece (bool filled)
             const int z = juce::jlimit (1, getSurfaceHeight() - 1, tetrisPiece.z + interval);
             const int mappedBlockType = 1 + (z % 4);
             activePlanetState->setBlock (cell.x, cell.y, z, filled ? mappedBlockType : 0);
+        }
+    }
+
+    if (filled)
+    {
+        int clearedLinesThisLock = 0;
+        for (const int z : affectedLayers)
+        {
+            std::vector<bool> clearMask (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), false);
+            int rowClears = 0;
+            int columnClears = 0;
+
+            for (int y = 0; y < getSurfaceDepth(); ++y)
+            {
+                bool fullRow = true;
+                for (int x = 0; x < getSurfaceWidth(); ++x)
+                    fullRow = fullRow && activePlanetState->getBlock (x, y, z) != 0;
+
+                if (fullRow)
+                {
+                    ++rowClears;
+                    for (int x = 0; x < getSurfaceWidth(); ++x)
+                        clearMask[static_cast<size_t> (y * getSurfaceWidth() + x)] = true;
+                }
+            }
+
+            for (int x = 0; x < getSurfaceWidth(); ++x)
+            {
+                bool fullColumn = true;
+                for (int y = 0; y < getSurfaceDepth(); ++y)
+                    fullColumn = fullColumn && activePlanetState->getBlock (x, y, z) != 0;
+
+                if (fullColumn)
+                {
+                    ++columnClears;
+                    for (int y = 0; y < getSurfaceDepth(); ++y)
+                        clearMask[static_cast<size_t> (y * getSurfaceWidth() + x)] = true;
+                }
+            }
+
+            if (rowClears == 0 && columnClears == 0)
+                continue;
+
+            clearedLinesThisLock += rowClears + columnClears;
+            for (int y = 0; y < getSurfaceDepth(); ++y)
+            {
+                for (int x = 0; x < getSurfaceWidth(); ++x)
+                {
+                    if (! clearMask[static_cast<size_t> (y * getSurfaceWidth() + x)])
+                        continue;
+
+                    for (int level = z; level < getSurfaceHeight() - 1; ++level)
+                        activePlanetState->setBlock (x, y, level, activePlanetState->getBlock (x, y, level + 1));
+
+                    activePlanetState->setBlock (x, y, getSurfaceHeight() - 1, 0);
+                }
+            }
+        }
+
+        if (clearedLinesThisLock > 0)
+        {
+            tetrisLinesCleared += clearedLinesThisLock;
+            ++tetrisCombo;
+        }
+        else
+        {
+            tetrisCombo = 0;
         }
     }
 
@@ -3839,7 +3925,55 @@ void GameComponent::toggleAutomataCell (juce::Point<int> cell, bool filled)
 
     const int z = juce::jlimit (1, getSurfaceHeight() - 1, automataBuildLayer);
     const int mappedBlockType = 1 + (z % 4);
-    activePlanetState->setBlock (cell.x, cell.y, z, filled ? mappedBlockType : 0);
+    std::vector<juce::Point<int>> brushCells;
+    brushCells.push_back (cell);
+
+    if (isometricPlacementHeight >= 2)
+    {
+        brushCells.push_back ({ cell.x - 1, cell.y });
+        brushCells.push_back ({ cell.x + 1, cell.y });
+        brushCells.push_back ({ cell.x, cell.y - 1 });
+        brushCells.push_back ({ cell.x, cell.y + 1 });
+    }
+
+    if (isometricPlacementHeight >= 3)
+    {
+        brushCells.push_back ({ cell.x - 1, cell.y - 1 });
+        brushCells.push_back ({ cell.x + 1, cell.y - 1 });
+        brushCells.push_back ({ cell.x - 1, cell.y + 1 });
+        brushCells.push_back ({ cell.x + 1, cell.y + 1 });
+    }
+
+    if (isometricPlacementHeight >= 4)
+    {
+        brushCells.push_back ({ cell.x - 2, cell.y });
+        brushCells.push_back ({ cell.x + 2, cell.y });
+        brushCells.push_back ({ cell.x, cell.y - 2 });
+        brushCells.push_back ({ cell.x, cell.y + 2 });
+    }
+
+    std::sort (brushCells.begin(), brushCells.end(),
+               [] (const juce::Point<int>& a, const juce::Point<int>& b)
+               {
+                   return std::tie (a.x, a.y) < std::tie (b.x, b.y);
+               });
+    brushCells.erase (std::unique (brushCells.begin(), brushCells.end(),
+                                   [] (const juce::Point<int>& a, const juce::Point<int>& b)
+                                   {
+                                       return a.x == b.x && a.y == b.y;
+                                   }),
+                      brushCells.end());
+
+    automataLastBrushCells = 0;
+    for (const auto& brushCell : brushCells)
+    {
+        if (! juce::isPositiveAndBelow (brushCell.x, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (brushCell.y, getSurfaceDepth()))
+            continue;
+
+        activePlanetState->setBlock (brushCell.x, brushCell.y, z, filled ? mappedBlockType : 0);
+        ++automataLastBrushCells;
+    }
     saveActivePlanet();
 }
 
@@ -3869,6 +4003,8 @@ void GameComponent::advanceAutomataLayer()
         return;
 
     std::vector<int> nextLayer (static_cast<size_t> (getSurfaceWidth() * getSurfaceDepth()), 0);
+    automataLastBirthCount = 0;
+    automataLastSurvivalCount = 0;
     for (int y = 0; y < getSurfaceDepth(); ++y)
         for (int x = 0; x < getSurfaceWidth(); ++x)
         {
@@ -3886,6 +4022,13 @@ void GameComponent::advanceAutomataLayer()
             }
 
             nextLayer[static_cast<size_t> (y * getSurfaceWidth() + x)] = nextAlive ? 1 + (destZ % 4) : 0;
+            if (nextAlive)
+            {
+                if (alive)
+                    ++automataLastSurvivalCount;
+                else
+                    ++automataLastBirthCount;
+            }
         }
 
     for (int y = 0; y < getSurfaceDepth(); ++y)
@@ -4079,6 +4222,9 @@ void GameComponent::applyFirstPersonAction (bool placeBlock)
 
     if (placeBlock)
     {
+        if (firstPersonBuildCharge < 1.0f)
+            return;
+
         const int placeX = target.placeX;
         const int placeY = target.placeY;
         const int baseZ = target.placeZ;
@@ -4096,6 +4242,7 @@ void GameComponent::applyFirstPersonAction (bool placeBlock)
         builderCursorX = placeX;
         builderCursorY = placeY;
         builderLayer = baseZ;
+        firstPersonBuildCharge = juce::jmax (0.0f, firstPersonBuildCharge - 1.0f);
     }
     else
     {
@@ -4110,6 +4257,7 @@ void GameComponent::applyFirstPersonAction (bool placeBlock)
         builderCursorX = target.hitX;
         builderCursorY = target.hitY;
         builderLayer = target.hitZ;
+        firstPersonBuildCharge = juce::jmin (24.0f, firstPersonBuildCharge + 1.0f);
     }
 
     saveActivePlanet();
@@ -6659,9 +6807,9 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (11.6f * uiScale));
     const juce::String controlsText = topDownBuildMode == TopDownBuildMode::tetris
-                                        ? "Move arrows or mouse   Layer [ ]   Notes 1-4   Chord V\nRotate R or left click   New N   Soft drop S   Hard drop Space/right click   Place O   Delete X"
+                                        ? "Move arrows or mouse   Layer [ ]   Notes 1-4   Chord V\nRotate R or left click   New N   Soft drop S   Hard drop Space/right click   Clear rows/columns to combo"
                                         : topDownBuildMode == TopDownBuildMode::cellularAutomata
-                                            ? "Move arrows   Layer [ ]   Notes 1-4\nSeed click/O   Delete X   Randomise N   E evolve next layer"
+                                            ? "Move arrows   Layer [ ]   Notes 1-4 brush size\nSeed click/O   Delete X   Randomise N   E evolve next layer"
                                             : "Pan WASD   Rotate Q/E   Height [ ]   Notes 1-4\nCycle chord V   Place click/O   Delete X   Exit Esc";
     g.drawFittedText (controlsText,
                       controlsInner.toNearestInt(),
@@ -6688,7 +6836,13 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
                                                                                                                            : "Life")
                    : getNoteNameForLayer (builderLayer));
     statsTop.removeFromLeft (gap);
-    drawValueCard (statsTop.removeFromLeft (twoCol), "NOTES", juce::String (isometricPlacementHeight));
+    drawValueCard (statsTop.removeFromLeft (twoCol),
+                   topDownBuildMode == TopDownBuildMode::tetris ? "COMBO"
+                   : topDownBuildMode == TopDownBuildMode::cellularAutomata ? "BRUSH"
+                   : "NOTES",
+                   topDownBuildMode == TopDownBuildMode::tetris ? juce::String (tetrisCombo)
+                   : topDownBuildMode == TopDownBuildMode::cellularAutomata ? juce::String (automataLastBrushCells) + " cells"
+                   : juce::String (isometricPlacementHeight));
 
     inner.removeFromTop (12.0f * uiScale);
     auto statsBottom = inner.removeFromTop (60.0f * uiScale);
@@ -6699,7 +6853,13 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
                          ? "x" + juce::String (tetrisPiece.anchor.x) + "  y" + juce::String (tetrisPiece.anchor.y) + "  z" + juce::String (tetrisBuildLayer)
                          : "x" + juce::String (builderCursorX) + "  y" + juce::String (builderCursorY) + "  z" + juce::String (builderLayer));
     statsBottom.removeFromLeft (gap);
-    drawValueCard (statsBottom.removeFromLeft (twoCol), "ZOOM", juce::String (isometricCamera.zoom, 2));
+    drawValueCard (statsBottom.removeFromLeft (twoCol),
+                   topDownBuildMode == TopDownBuildMode::tetris ? "LINES"
+                   : topDownBuildMode == TopDownBuildMode::cellularAutomata ? "EVOLVE"
+                   : "ZOOM",
+                   topDownBuildMode == TopDownBuildMode::tetris ? juce::String (tetrisLinesCleared)
+                   : topDownBuildMode == TopDownBuildMode::cellularAutomata ? juce::String (automataLastBirthCount) + " born / " + juce::String (automataLastSurvivalCount) + " stable"
+                   : juce::String (isometricCamera.zoom, 2));
 
     inner.removeFromTop (16.0f * uiScale);
     auto chordCard = inner.removeFromTop (136.0f * uiScale);
@@ -6751,9 +6911,10 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     g.setFont (juce::FontOptions (11.4f * uiScale));
     g.drawFittedText ((topDownBuildMode == TopDownBuildMode::tetris
                          ? "Filled " + juce::String (filledCount) + "   |   Next " + getTetrominoTypeName (nextTetrisType)
-                           + "   |   E climbs to next layer"
+                           + "   |   " + (tetrisCombo > 0 ? "Combo x" + juce::String (tetrisCombo) : "Build rows or columns to clear")
                          : topDownBuildMode == TopDownBuildMode::cellularAutomata
-                             ? "Filled " + juce::String (filledCount) + "   |   E evolves into layer "
+                             ? "Filled " + juce::String (filledCount) + "   |   Brush " + juce::String (automataLastBrushCells)
+                               + " cells   |   E evolves into layer "
                                + juce::String (juce::jmin (getSurfaceHeight() - 1, automataBuildLayer + 1))
                              : "Filled " + juce::String (filledCount) + "   |   Rotation " + juce::String (isometricCamera.rotation)
                                + "   |   Mouse place/remove active"),
@@ -8374,7 +8535,9 @@ void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<i
     g.drawRoundedRectangle (hudChip, 12.0f, 1.2f);
     g.setColour (juce::Colour::fromRGBA (232, 242, 255, 220));
     g.setFont (juce::FontOptions (13.0f));
-    g.drawText (planet.name + "  |  " + getPlanetPerformanceModeName (planet.assignedPerformanceMode) + "  |  [" + juce::String (firstPersonPlacementOffset) + "] height",
+    g.drawText (planet.name + "  |  " + getPlanetPerformanceModeName (planet.assignedPerformanceMode)
+                    + "  |  [" + juce::String (firstPersonPlacementOffset) + "] height"
+                    + "  |  charge " + juce::String (firstPersonBuildCharge, 1),
                 hudChip.toNearestInt().reduced (12, 0), juce::Justification::centredLeft);
 
     const float crosshairPulse = 0.55f + 0.45f * std::sin (transportPhase * juce::MathConstants<float>::twoPi * 8.0f);
@@ -9139,6 +9302,8 @@ void GameComponent::timerCallback()
         firstPersonLandingBob *= 0.82f;
         if (firstPersonLandingBob < 0.02f)
             firstPersonLandingBob = 0.0f;
+
+        firstPersonBuildCharge = juce::jmin (24.0f, firstPersonBuildCharge + 0.02f);
 
         syncCursorToFirstPersonTarget();
     }
