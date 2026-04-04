@@ -387,6 +387,9 @@ private:
     bool suppressNextMouseMove = false;
     bool firstPersonCursorCaptured = false;
     bool firstPersonJumpWasDown = false;
+    float firstPersonWalkPhase = 0.0f;
+    float firstPersonMoveBlend = 0.0f;
+    float firstPersonLandingBob = 0.0f;
     double currentSampleRate = 44100.0;
     SynthEngine synthEngine = SynthEngine::digitalV4;
     DrumMode drumMode = DrumMode::reactiveBreakbeat;
@@ -423,6 +426,7 @@ private:
     int getGroundZAt (int x, int y) const noexcept;
     int getHighestOccupiedZ() const noexcept;
     bool isWalkable (float x, float y, float eyeZ) const;
+    float getSupportedEyeZAt (float x, float y, float eyeHeight) const noexcept;
     juce::Point<int> rotateIsometricXY (int x, int y) const;
     juce::Point<float> getIsometricProjectionOffset (juce::Rectangle<float> area) const;
     juce::Point<float> projectIsometricPoint (int x, int y, int z, juce::Rectangle<float> area) const;

@@ -2078,25 +2078,67 @@ int GameComponent::getHighestOccupiedZ() const noexcept
 
 bool GameComponent::isWalkable (float x, float y, float eyeZ) const
 {
-    const auto cellX = static_cast<int> (std::floor (x));
-    const auto cellY = static_cast<int> (std::floor (y));
-    const auto feetZ = static_cast<int> (std::floor (eyeZ - 1.2f));
-    const auto headZ = static_cast<int> (std::floor (eyeZ - 0.2f));
-
-    if (! juce::isPositiveAndBelow (cellX, getSurfaceWidth())
-        || ! juce::isPositiveAndBelow (cellY, getSurfaceDepth()))
-        return false;
-
     if (activePlanetState == nullptr)
         return false;
 
-    const auto emptyAt = [this, cellX, cellY] (int z)
+    constexpr float bodyRadius = 0.22f;
+    const auto feetZ = static_cast<int> (std::floor (eyeZ - 1.2f));
+    const auto headZ = static_cast<int> (std::floor (eyeZ - 0.2f));
+    const std::array<juce::Point<float>, 5> samples {{
+        { x, y },
+        { x - bodyRadius, y },
+        { x + bodyRadius, y },
+        { x, y - bodyRadius },
+        { x, y + bodyRadius }
+    }};
+
+    const auto emptyAt = [this] (int cellX, int cellY, int z)
     {
+        if (! juce::isPositiveAndBelow (cellX, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (cellY, getSurfaceDepth()))
+            return false;
         return ! juce::isPositiveAndBelow (z, getSurfaceHeight())
             || activePlanetState->getBlock (cellX, cellY, z) == 0;
     };
 
-    return emptyAt (feetZ) && emptyAt (headZ);
+    for (const auto& sample : samples)
+    {
+        const auto cellX = static_cast<int> (std::floor (sample.x));
+        const auto cellY = static_cast<int> (std::floor (sample.y));
+        if (! emptyAt (cellX, cellY, feetZ) || ! emptyAt (cellX, cellY, headZ))
+            return false;
+    }
+
+    return true;
+}
+
+float GameComponent::getSupportedEyeZAt (float x, float y, float eyeHeight) const noexcept
+{
+    if (activePlanetState == nullptr)
+        return eyeHeight;
+
+    constexpr float bodyRadius = 0.22f;
+    const std::array<juce::Point<float>, 5> samples {{
+        { x, y },
+        { x - bodyRadius, y },
+        { x + bodyRadius, y },
+        { x, y - bodyRadius },
+        { x, y + bodyRadius }
+    }};
+
+    int supportZ = 0;
+    for (const auto& sample : samples)
+    {
+        const auto cellX = static_cast<int> (std::floor (sample.x));
+        const auto cellY = static_cast<int> (std::floor (sample.y));
+        if (! juce::isPositiveAndBelow (cellX, getSurfaceWidth())
+            || ! juce::isPositiveAndBelow (cellY, getSurfaceDepth()))
+            return eyeHeight;
+
+        supportZ = juce::jmax (supportZ, getTopSolidZAt (cellX, cellY));
+    }
+
+    return static_cast<float> (supportZ) + eyeHeight;
 }
 
 juce::Point<int> GameComponent::rotateIsometricXY (int x, int y) const
@@ -3952,7 +3994,7 @@ GameComponent::TargetedVoxel GameComponent::findFirstPersonTarget() const
     const float dirY = std::cos (firstPersonState.yaw) * cosPitch;
     const float dirZ = std::sin (firstPersonState.pitch);
 
-    constexpr float maxDistance = 12.0f;
+    constexpr float maxDistance = 16.0f;
     constexpr float stepSize = 0.05f;
 
     for (float distance = 0.0f; distance <= maxDistance; distance += stepSize)
@@ -8013,21 +8055,56 @@ void GameComponent::drawAutomataBuildView (juce::Graphics& g, juce::Rectangle<fl
 void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<int> area)
 {
     const auto target = findFirstPersonTarget();
-    juce::ColourGradient skyGradient (juce::Colour (0xff726859), static_cast<float> (area.getCentreX()), static_cast<float> (area.getY()),
-                                      juce::Colour (0xff2c241e), static_cast<float> (area.getCentreX()), static_cast<float> (area.getBottom()), false);
-    skyGradient.addColour (0.58, juce::Colour (0xff51463a));
+    const auto& planet = getSelectedPlanet();
+    const auto buildColour = getPlanetBuildModeColour (planet.assignedBuildMode);
+    const auto performanceColour = getPlanetPerformanceModeColour (planet.assignedPerformanceMode);
+    const auto traitColour = getPlanetTraitColour (planet.trait);
+    const auto horizonColour = buildColour.interpolatedWith (performanceColour, 0.42f).interpolatedWith (traitColour, 0.24f);
+    const auto skyTop = juce::Colour::fromRGB (10, 12, 30).interpolatedWith (horizonColour, 0.26f);
+    const auto skyMid = juce::Colour::fromRGB (20, 18, 40).interpolatedWith (performanceColour, 0.22f);
+    const auto groundColour = juce::Colour::fromRGB (14, 12, 16).interpolatedWith (buildColour, 0.16f);
+    const auto fogColour = juce::Colour::fromRGB (18, 22, 42).interpolatedWith (horizonColour, 0.28f);
+
+    juce::ColourGradient skyGradient (skyTop, static_cast<float> (area.getCentreX()), static_cast<float> (area.getY()),
+                                      groundColour, static_cast<float> (area.getCentreX()), static_cast<float> (area.getBottom()), false);
+    skyGradient.addColour (0.44, skyMid);
+    skyGradient.addColour (0.66, skyMid.interpolatedWith (horizonColour, 0.24f));
     g.setGradientFill (skyGradient);
     g.fillRect (area);
 
+    const auto leftGlow = juce::Rectangle<float> (static_cast<float> (area.getWidth()) * 0.68f,
+                                                  static_cast<float> (area.getHeight()) * 0.44f)
+                                .withCentre ({ static_cast<float> (area.getX()) + static_cast<float> (area.getWidth()) * 0.28f,
+                                               static_cast<float> (area.getY()) + static_cast<float> (area.getHeight()) * 0.22f });
+    const auto rightGlow = juce::Rectangle<float> (static_cast<float> (area.getWidth()) * 0.56f,
+                                                   static_cast<float> (area.getHeight()) * 0.38f)
+                                 .withCentre ({ static_cast<float> (area.getRight()) - static_cast<float> (area.getWidth()) * 0.22f,
+                                                static_cast<float> (area.getY()) + static_cast<float> (area.getHeight()) * 0.28f });
+    fillGlow (g, leftGlow, performanceColour, 0.16f);
+    fillGlow (g, rightGlow, buildColour, 0.12f);
+
+    for (int i = 0; i < 24; ++i)
+    {
+        const float px = static_cast<float> (area.getX()) + 24.0f + std::fmod (static_cast<float> (i * 173), static_cast<float> (area.getWidth() - 48));
+        const float py = static_cast<float> (area.getY()) + 18.0f + std::fmod (static_cast<float> (i * 97), static_cast<float> (juce::jmax (40, area.getHeight() / 2)));
+        const float size = (i % 5 == 0) ? 2.4f : 1.2f;
+        g.setColour ((i % 3 == 0 ? performanceColour : buildColour).withAlpha (0.32f));
+        g.fillEllipse (juce::Rectangle<float> (size, size).withCentre ({ px, py }));
+    }
+
     auto lowerBand = area.withTrimmedTop (static_cast<int> (area.getHeight() * 0.58f));
     juce::ColourGradient groundFade (juce::Colour (0x00000000), static_cast<float> (lowerBand.getCentreX()), static_cast<float> (lowerBand.getY()),
-                                     juce::Colour (0xaa100c09), static_cast<float> (lowerBand.getCentreX()), static_cast<float> (lowerBand.getBottom()), false);
+                                     groundColour.withAlpha (0.86f), static_cast<float> (lowerBand.getCentreX()), static_cast<float> (lowerBand.getBottom()),
+                                     false);
     g.setGradientFill (groundFade);
     g.fillRect (lowerBand);
 
+    const float walkBob = std::sin (firstPersonWalkPhase) * 5.0f * firstPersonMoveBlend - firstPersonLandingBob;
+    const float swayBob = std::cos (firstPersonWalkPhase * 0.5f) * 3.0f * firstPersonMoveBlend;
     const float centreX = static_cast<float> (area.getCentreX());
-    const float centreY = static_cast<float> (area.getCentreY());
-    const float projectionScale = static_cast<float> (area.getWidth()) * 0.9f;
+    const float centreY = static_cast<float> (area.getCentreY()) + walkBob;
+    // Wider first-person projection so the view feels closer to Minecraft's default FOV.
+    const float projectionScale = static_cast<float> (area.getWidth()) * 0.40f;
     const float camX = firstPersonState.x;
     const float camY = firstPersonState.y;
     const float camZ = firstPersonState.eyeZ;
@@ -8207,6 +8284,8 @@ void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<i
             else if (face.blockType == 4)
                 sample = sample.interpolatedWith (juce::Colours::darkgreen, (hash & 1) == 0 ? 0.18f : 0.05f);
 
+            const float fogFactor = juce::jlimit (0.0f, 1.0f, (face.depth - 4.0f) / 18.0f);
+            sample = sample.interpolatedWith (fogColour, fogFactor * 0.72f);
             return sample;
         };
 
@@ -8313,6 +8392,13 @@ void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<i
     };
 
     if (target.valid
+        && juce::isPositiveAndBelow (target.hitX, getSurfaceWidth())
+        && juce::isPositiveAndBelow (target.hitY, getSurfaceDepth())
+        && juce::isPositiveAndBelow (target.hitZ, getSurfaceHeight())
+        && activePlanetState->getBlock (target.hitX, target.hitY, target.hitZ) != 0)
+        drawWireBox (target.hitX, target.hitY, target.hitZ, juce::Colour::fromFloatRGBA (1.0f, 0.88f, 0.46f, 0.82f));
+
+    if (target.valid
         && juce::isPositiveAndBelow (target.placeX, getSurfaceWidth())
         && juce::isPositiveAndBelow (target.placeY, getSurfaceDepth())
         && juce::isPositiveAndBelow (target.placeZ, getSurfaceHeight()))
@@ -8320,13 +8406,33 @@ void GameComponent::drawFirstPersonBuilder (juce::Graphics& g, juce::Rectangle<i
 
     drawHotbar (g, area);
 
+    auto hudChip = juce::Rectangle<float> (286.0f, 30.0f).withPosition (static_cast<float> (area.getX() + 18), static_cast<float> (area.getY() + 16));
+    g.setColour (juce::Colour::fromRGBA (10, 16, 38, 170));
+    g.fillRoundedRectangle (hudChip, 12.0f);
+    g.setColour (buildColour.interpolatedWith (performanceColour, 0.45f).withAlpha (0.55f));
+    g.drawRoundedRectangle (hudChip, 12.0f, 1.2f);
+    g.setColour (juce::Colour::fromRGBA (232, 242, 255, 220));
+    g.setFont (juce::FontOptions (13.0f));
+    g.drawText (planet.name + "  |  " + getPlanetPerformanceModeName (planet.assignedPerformanceMode) + "  |  [" + juce::String (firstPersonPlacementOffset) + "] height",
+                hudChip.toNearestInt().reduced (12, 0), juce::Justification::centredLeft);
+
     const float crosshairPulse = 0.55f + 0.45f * std::sin (transportPhase * juce::MathConstants<float>::twoPi * 8.0f);
-    const float crosshairSize = 8.0f + crosshairPulse * 2.0f;
-    g.setColour (juce::Colours::white);
-    g.drawLine (centreX - crosshairSize, centreY,
-                centreX + crosshairSize, centreY, 1.6f);
-    g.drawLine (centreX, centreY - crosshairSize,
-                centreX, centreY + crosshairSize, 1.6f);
+    const float crosshairSize = 8.0f + crosshairPulse * 2.2f;
+    const auto crosshairColour = target.valid ? juce::Colour::fromRGBA (255, 236, 186, 240)
+                                              : juce::Colour::fromRGBA (220, 232, 255, 196);
+    g.setColour (juce::Colours::black.withAlpha (0.32f));
+    g.drawEllipse (centreX - 18.0f + swayBob * 0.12f, centreY - 18.0f, 36.0f, 36.0f, 1.2f);
+    g.setColour (crosshairColour);
+    g.drawLine (centreX - crosshairSize + swayBob * 0.18f, centreY,
+                centreX + crosshairSize + swayBob * 0.18f, centreY, 1.8f);
+    g.drawLine (centreX + swayBob * 0.18f, centreY - crosshairSize,
+                centreX + swayBob * 0.18f, centreY + crosshairSize, 1.8f);
+    g.drawEllipse (centreX - 2.4f + swayBob * 0.18f, centreY - 2.4f, 4.8f, 4.8f, 1.0f);
+
+    juce::ColourGradient vignette (juce::Colour::fromRGBA (0, 0, 0, 0), centreX, centreY,
+                                   juce::Colour::fromRGBA (0, 0, 0, 132), static_cast<float> (area.getX()), static_cast<float> (area.getY()), true);
+    g.setGradientFill (vignette);
+    g.fillRect (area);
 }
 
 void GameComponent::drawTexturedCube (juce::Graphics& g, juce::Point<float> origin, float halfWidth, float halfHeight, int blockType, bool selected) const
@@ -8928,6 +9034,7 @@ void GameComponent::timerCallback()
         const float moveZ = float ((juce::KeyPress::isKeyCurrentlyDown ('w') ? 1 : 0)
                                  - (juce::KeyPress::isKeyCurrentlyDown ('s') ? 1 : 0));
         const bool jumpDown = juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey);
+        float movedDistance = 0.0f;
 
         if (moveX != 0.0f || moveZ != 0.0f)
         {
@@ -8946,17 +9053,83 @@ void GameComponent::timerCallback()
 
                 const float nextX = firstPersonState.x + wishX;
                 const float nextY = firstPersonState.y + wishY;
+                const float oldX = firstPersonState.x;
+                const float oldY = firstPersonState.y;
+                const float currentEyeZ = firstPersonState.eyeZ;
+                bool movedX = false;
+                bool movedY = false;
 
-                if (isWalkable (nextX, firstPersonState.y, firstPersonState.eyeZ))
+                const float supportXOnly = getSupportedEyeZAt (nextX, firstPersonState.y, eyeHeight);
+                const float stepEyeX = (supportXOnly > currentEyeZ && supportXOnly - currentEyeZ <= maxStepUp)
+                                         ? supportXOnly
+                                         : currentEyeZ;
+                if (isWalkable (nextX, firstPersonState.y, stepEyeX))
+                {
                     firstPersonState.x = nextX;
-                if (isWalkable (firstPersonState.x, nextY, firstPersonState.eyeZ))
+                    movedX = true;
+                    if (supportXOnly > currentEyeZ && supportXOnly - currentEyeZ <= maxStepUp)
+                        firstPersonState.eyeZ = supportXOnly;
+                }
+
+                const float supportYOnly = getSupportedEyeZAt (firstPersonState.x, nextY, eyeHeight);
+                const float stepEyeY = (supportYOnly > firstPersonState.eyeZ && supportYOnly - firstPersonState.eyeZ <= maxStepUp)
+                                         ? supportYOnly
+                                         : firstPersonState.eyeZ;
+                if (isWalkable (firstPersonState.x, nextY, stepEyeY))
+                {
                     firstPersonState.y = nextY;
+                    movedY = true;
+                    if (supportYOnly > firstPersonState.eyeZ && supportYOnly - firstPersonState.eyeZ <= maxStepUp)
+                        firstPersonState.eyeZ = supportYOnly;
+                }
+
+                if (! movedX && ! movedY)
+                {
+                    const float slideScale = 0.55f;
+                    const float slideX = firstPersonState.x + wishX * slideScale;
+                    const float slideY = firstPersonState.y + wishY * slideScale;
+
+                    const float supportSlideX = getSupportedEyeZAt (slideX, firstPersonState.y, eyeHeight);
+                    const float slideEyeX = (supportSlideX > firstPersonState.eyeZ && supportSlideX - firstPersonState.eyeZ <= maxStepUp)
+                                              ? supportSlideX
+                                              : firstPersonState.eyeZ;
+                    if (isWalkable (slideX, firstPersonState.y, slideEyeX))
+                    {
+                        firstPersonState.x = slideX;
+                        movedX = true;
+                        if (supportSlideX > firstPersonState.eyeZ && supportSlideX - firstPersonState.eyeZ <= maxStepUp)
+                            firstPersonState.eyeZ = supportSlideX;
+                    }
+
+                    const float supportSlideY = getSupportedEyeZAt (firstPersonState.x, slideY, eyeHeight);
+                    const float slideEyeY = (supportSlideY > firstPersonState.eyeZ && supportSlideY - firstPersonState.eyeZ <= maxStepUp)
+                                              ? supportSlideY
+                                              : firstPersonState.eyeZ;
+                    if (isWalkable (firstPersonState.x, slideY, slideEyeY))
+                    {
+                        firstPersonState.y = slideY;
+                        movedY = true;
+                        if (supportSlideY > firstPersonState.eyeZ && supportSlideY - firstPersonState.eyeZ <= maxStepUp)
+                            firstPersonState.eyeZ = supportSlideY;
+                    }
+                }
+
+                movedDistance = std::sqrt ((firstPersonState.x - oldX) * (firstPersonState.x - oldX)
+                                         + (firstPersonState.y - oldY) * (firstPersonState.y - oldY));
             }
         }
 
-        const int supportX = juce::jlimit (0, getSurfaceWidth() - 1, static_cast<int> (std::floor (firstPersonState.x)));
-        const int supportY = juce::jlimit (0, getSurfaceDepth() - 1, static_cast<int> (std::floor (firstPersonState.y)));
-        const float supportedEyeZ = static_cast<float> (getTopSolidZAt (supportX, supportY)) + eyeHeight;
+        if (movedDistance > 0.001f)
+        {
+            firstPersonWalkPhase += 0.42f + movedDistance * 9.0f;
+            firstPersonMoveBlend = juce::jlimit (0.0f, 1.0f, firstPersonMoveBlend + 0.12f);
+        }
+        else
+        {
+            firstPersonMoveBlend = juce::jmax (0.0f, firstPersonMoveBlend - 0.10f);
+        }
+
+        const float supportedEyeZ = getSupportedEyeZAt (firstPersonState.x, firstPersonState.y, eyeHeight);
         const bool onGround = std::abs (firstPersonState.eyeZ - supportedEyeZ) <= 0.05f;
 
         if (jumpDown && ! firstPersonJumpWasDown && onGround)
@@ -8991,6 +9164,7 @@ void GameComponent::timerCallback()
 
             if (firstPersonState.eyeZ <= supportedEyeZ + 0.001f)
             {
+                firstPersonLandingBob = juce::jlimit (0.0f, 10.0f, std::abs (firstPersonState.verticalVelocity) * 7.5f + 1.2f);
                 firstPersonState.eyeZ = supportedEyeZ;
                 firstPersonState.verticalVelocity = 0.0f;
             }
@@ -9000,6 +9174,10 @@ void GameComponent::timerCallback()
             firstPersonState.eyeZ = supportedEyeZ;
             firstPersonState.verticalVelocity = 0.0f;
         }
+
+        firstPersonLandingBob *= 0.82f;
+        if (firstPersonLandingBob < 0.02f)
+            firstPersonLandingBob = 0.0f;
 
         syncCursorToFirstPersonTarget();
     }
