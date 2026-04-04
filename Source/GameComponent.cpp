@@ -48,30 +48,65 @@ void fillGlow (juce::Graphics& g, juce::Rectangle<float> area, juce::Colour colo
 void drawPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour lightColour)
 {
     auto panel = area.toFloat();
-    constexpr float radius = 11.0f;
-    g.setColour (juce::Colour (0xee070b16));
+    constexpr float radius = 18.0f;
+    g.setColour (juce::Colour (0xf2070d1c));
     g.fillRoundedRectangle (panel, radius);
 
-    juce::ColourGradient wash (juce::Colour::fromRGBA (52, 34, 164, 244), panel.getX(), panel.getY(),
-                               juce::Colour::fromRGBA (20, 14, 74, 234), panel.getRight(), panel.getBottom(), false);
-    wash.addColour (0.16, juce::Colour::fromRGBA (64, 182, 255, 178));
-    wash.addColour (0.34, juce::Colour::fromRGBA (80, 255, 188, 134));
-    wash.addColour (0.54, juce::Colour::fromRGBA (214, 72, 255, 146));
-    wash.addColour (0.76, juce::Colour::fromRGBA (255, 104, 152, 136));
-    wash.addColour (0.90, juce::Colour::fromRGBA (255, 184, 72, 122));
-    wash.addColour (1.0, juce::Colour::fromRGBA (28, 14, 66, 238));
+    juce::ColourGradient wash (juce::Colour::fromRGBA (18, 32, 78, 246), panel.getX(), panel.getY(),
+                               juce::Colour::fromRGBA (18, 10, 48, 240), panel.getRight(), panel.getBottom(), false);
+    wash.addColour (0.18, juce::Colour::fromRGBA (42, 126, 255, 170));
+    wash.addColour (0.44, juce::Colour::fromRGBA (88, 76, 255, 144));
+    wash.addColour (0.74, juce::Colour::fromRGBA (214, 74, 255, 114));
+    wash.addColour (1.0, juce::Colour::fromRGBA (16, 10, 44, 246));
     g.setGradientFill (wash);
     g.fillRoundedRectangle (panel, radius);
 
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 58));
-    g.fillRoundedRectangle (panel.reduced (3.0f, 3.0f).withHeight (panel.getHeight() * 0.24f), 7.0f);
-    g.setColour (withAlpha (lightColour.interpolatedWith (juce::Colour::fromRGB (255, 112, 214), 0.38f), 0.26f));
-    g.fillRoundedRectangle (panel.reduced (3.0f).withTrimmedTop (panel.getHeight() * 0.42f), 8.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
+    g.fillRoundedRectangle (panel.reduced (5.0f, 5.0f).withHeight (panel.getHeight() * 0.16f), 10.0f);
+    g.setColour (withAlpha (lightColour.interpolatedWith (juce::Colour::fromRGB (255, 132, 222), 0.28f), 0.12f));
+    g.fillRoundedRectangle (panel.reduced (4.0f).withTrimmedTop (panel.getHeight() * 0.52f), 12.0f);
 
-    g.setColour (juce::Colour::fromRGBA (164, 246, 255, 208));
-    g.drawRoundedRectangle (panel.reduced (1.0f), radius, 1.3f);
-    g.setColour (juce::Colour::fromRGBA (92, 54, 168, 255));
-    g.drawRoundedRectangle (panel.reduced (4.0f), radius - 3.0f, 1.0f);
+    g.setColour (withAlpha (lightColour.interpolatedWith (juce::Colour::fromRGB (255, 196, 112), 0.20f), 0.84f));
+    g.drawRoundedRectangle (panel.reduced (1.5f), radius, 1.6f);
+    g.setColour (juce::Colour::fromRGBA (84, 54, 176, 176));
+    g.drawRoundedRectangle (panel.reduced (5.0f), radius - 4.0f, 1.0f);
+}
+
+void drawInsetCard (juce::Graphics& g, juce::Rectangle<float> bounds, juce::Colour accent, float radius = 16.0f)
+{
+    g.setColour (juce::Colour::fromRGBA (2, 6, 20, 74));
+    g.fillRoundedRectangle (bounds.translated (0.0f, 5.0f), radius + 2.0f);
+
+    juce::ColourGradient fill (juce::Colour::fromRGBA (20, 28, 68, 236),
+                               bounds.getX(), bounds.getY(),
+                               juce::Colour::fromRGBA (14, 18, 48, 242),
+                               bounds.getRight(), bounds.getBottom(),
+                               false);
+    fill.addColour (0.26, accent.withAlpha (0.20f));
+    fill.addColour (1.0, juce::Colour::fromRGBA (12, 14, 40, 244));
+    g.setGradientFill (fill);
+    g.fillRoundedRectangle (bounds, radius);
+
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 22));
+    g.fillRoundedRectangle (bounds.reduced (4.0f, 4.0f).withHeight (bounds.getHeight() * 0.18f), juce::jmax (6.0f, radius - 8.0f));
+    g.setColour (accent.withAlpha (0.68f));
+    g.drawRoundedRectangle (bounds, radius, 1.2f);
+    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 12));
+    g.drawRoundedRectangle (bounds.reduced (4.0f), juce::jmax (4.0f, radius - 4.0f), 0.9f);
+}
+
+void drawInfoPill (juce::Graphics& g, juce::Rectangle<float> bounds, juce::Colour accent)
+{
+    juce::ColourGradient fill (juce::Colour::fromRGBA (12, 18, 42, 206),
+                               bounds.getX(), bounds.getY(),
+                               juce::Colour::fromRGBA (18, 20, 54, 214),
+                               bounds.getRight(), bounds.getBottom(),
+                               false);
+    fill.addColour (0.34, accent.withAlpha (0.14f));
+    g.setGradientFill (fill);
+    g.fillRoundedRectangle (bounds, bounds.getHeight() * 0.5f);
+    g.setColour (accent.withAlpha (0.42f));
+    g.drawRoundedRectangle (bounds, bounds.getHeight() * 0.5f, 1.0f);
 }
 
 void drawVignette (juce::Graphics& g, juce::Rectangle<int> bounds)
@@ -5004,12 +5039,12 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     g.setColour (juce::Colour::fromRGBA (154, 210, 255, 12));
     g.fillPath (diagonalSheen);
 
-    auto inner = card.reduced (44.0f, 34.0f);
+    auto inner = card.reduced (52.0f, 40.0f);
     auto topRow = inner.removeFromTop (188.0f);
+    inner.removeFromTop (26.0f);
+    auto actionsRow = inner.removeFromTop (132.0f);
     inner.removeFromTop (20.0f);
-    auto actionsRow = inner.removeFromTop (124.0f);
-    inner.removeFromTop (16.0f);
-    auto hintArea = inner.removeFromTop (26.0f);
+    auto hintArea = inner.removeFromTop (22.0f);
 
     auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.53f);
     topRow.removeFromLeft (30.0f);
@@ -5265,7 +5300,7 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     for (const auto& voxel : showcaseVoxels)
         drawShowcaseVoxel (voxel.x, voxel.y, voxel.z, voxel.colour);
     g.restoreState();
-    const float buttonGap = 20.0f;
+    const float buttonGap = 24.0f;
     const float buttonWidth = (actionsRow.getWidth() - buttonGap * 3.0f) / 4.0f;
     const std::array<TitleAction, 4> actions {
         TitleAction::resumeVoyage,
@@ -5289,8 +5324,6 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
         const float pulse = hovered ? (0.5f + 0.5f * static_cast<float> (std::sin (juce::Time::getMillisecondCounterHiRes() * 0.006))) : 0.0f;
         const float lift = hovered ? -5.0f : 0.0f;
         button = button.translated (0.0f, lift);
-        g.setColour (juce::Colour::fromRGBA (0, 0, 0, hovered ? 120 : (enabled ? 76 : 56)));
-        g.fillRoundedRectangle (button.translated (0.0f, 7.0f), 20.0f);
         const auto topColour = [&]() -> juce::Colour
         {
             if (! enabled)
@@ -5320,24 +5353,16 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
                 return juce::Colour::fromRGBA (34, 10, 68, 248);
             return juce::Colour::fromRGBA (58, 14, 48, 248);
         }();
-        juce::ColourGradient buttonFill (topColour,
-                                         button.getCentreX(), button.getY(),
-                                         bottomColour,
-                                         button.getCentreX(), button.getBottom(),
-                                         false);
-        g.setGradientFill (buttonFill);
-        g.fillRoundedRectangle (button, 20.0f);
-        g.setColour (! enabled ? juce::Colour::fromRGBA (172, 178, 194, 92)
-                               : (hovered ? juce::Colour::fromRGBA (255, 222, 150, static_cast<uint8_t> (194 + 34 * pulse))
-                                          : juce::Colour::fromRGBA (132, 224, 255, 156)));
-        g.drawRoundedRectangle (button, 20.0f, hovered ? 2.6f : 1.4f);
-        g.setColour (! enabled ? juce::Colour::fromRGBA (255, 255, 255, 12)
-                               : (hovered ? juce::Colour::fromRGBA (255, 176, 112, static_cast<uint8_t> (40 + 28 * pulse))
-                                          : juce::Colour::fromRGBA (112, 214, 255, 26)));
-        g.fillRoundedRectangle (button.reduced (5.0f, 5.0f), 16.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, hovered ? 70 : (enabled ? 42 : 18)));
-        g.fillRoundedRectangle (button.reduced (16.0f, 10.0f).withHeight (12.0f), 6.0f);
-        auto buttonInner = button.reduced (22.0f, 18.0f);
+        auto accent = topColour.interpolatedWith (bottomColour, 0.32f);
+        if (! enabled)
+            accent = juce::Colour::fromRGBA (128, 136, 154, 102);
+        drawInsetCard (g, button, hovered ? accent.brighter (0.18f) : accent, 22.0f);
+        if (hovered && enabled)
+        {
+            g.setColour (juce::Colour::fromRGBA (255, 220, 150, static_cast<uint8_t> (42 + 42 * pulse)));
+            g.drawRoundedRectangle (button.expanded (2.0f), 24.0f, 1.3f);
+        }
+        auto buttonInner = button.reduced (24.0f, 20.0f);
         g.setColour (enabled ? juce::Colours::white : juce::Colours::white.withAlpha (0.55f));
         g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
         g.drawText (titleActionLabel (actions[i]), buttonInner.removeFromTop (34.0f).toNearestInt(), juce::Justification::centredLeft);
@@ -5349,11 +5374,8 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
                           buttonInner.toNearestInt(), juce::Justification::topLeft, 2);
     }
 
-    auto footerCloud = hintArea.reduced (56.0f, 0.0f);
-    g.setColour (juce::Colour::fromRGBA (16, 22, 54, 196));
-    g.fillRoundedRectangle (footerCloud, 13.0f);
-    g.setColour (juce::Colour::fromRGBA (132, 224, 255, 56));
-    g.drawRoundedRectangle (footerCloud, 13.0f, 1.0f);
+    auto footerCloud = hintArea.reduced (72.0f, 0.0f);
+    drawInfoPill (g, footerCloud, juce::Colour::fromRGBA (132, 224, 255, 200));
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 212));
     g.setFont (juce::FontOptions (12.5f));
     g.drawText ("Resume continues your voyage   |   New creates a fresh galaxy   |   Load opens a .drd save   |   Save writes the current voyage",
@@ -5364,10 +5386,7 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     {
         auto autosaveBand = juce::Rectangle<float> (420.0f, 18.0f)
                                 .withCentre ({ footerCloud.getCentreX(), footerCloud.getBottom() + 30.0f });
-        g.setColour (juce::Colour::fromRGBA (12, 16, 38, 138));
-        g.fillRoundedRectangle (autosaveBand, 8.0f);
-        g.setColour (juce::Colour::fromRGBA (138, 228, 255, 52));
-        g.drawRoundedRectangle (autosaveBand, 8.0f, 1.0f);
+        drawInfoPill (g, autosaveBand, juce::Colour::fromRGBA (138, 228, 255, 190));
         g.setColour (juce::Colour::fromRGBA (214, 228, 248, 170));
         g.setFont (juce::FontOptions (11.0f));
         g.drawText ("Last autosave: " + titleRecoverySlot.savedUtc + "   |   " + titleRecoverySlot.galaxyName,
@@ -5548,8 +5567,10 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
 
     ensureGalaxyDiscoveryState();
 
-    auto mapArea = area.removeFromLeft (area.proportionOfWidth (0.57f)).reduced (10);
-    auto sideArea = area.reduced (10);
+    auto content = area.reduced (16);
+    auto mapArea = content.removeFromLeft (content.proportionOfWidth (0.59f)).reduced (4);
+    content.removeFromLeft (18);
+    auto sideArea = content.reduced (4);
     const float uiScale = juce::jlimit (0.82f, 1.0f,
                                         juce::jmin (sideArea.getWidth() / 700.0f,
                                                     sideArea.getHeight() / 860.0f));
@@ -5987,12 +6008,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     inner.removeFromTop (10.0f * uiScale);
     auto drawChip = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value)
     {
-        g.setColour (juce::Colour::fromRGBA (11, 20, 46, 208));
-        g.fillRoundedRectangle (bounds, 7.0f);
-        g.setColour (juce::Colour::fromRGBA (96, 184, 255, 46));
-        g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 16));
-        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.20f), 3.0f);
+        drawInsetCard (g, bounds, selectedRegionColour.withAlpha (0.74f), 10.0f);
         auto textArea = bounds.reduced (11.0f * uiScale, 0.0f);
         auto labelArea = textArea.removeFromLeft (juce::jmin (84.0f, bounds.getWidth() * 0.36f));
         g.setColour (juce::Colour::fromRGBA (132, 196, 255, 166));
@@ -6024,14 +6040,10 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
     {
         const auto& planet = *system.planets.getUnchecked (i);
         auto row = listArea.removeFromTop (44.0f * uiScale);
-        g.setColour (i == selectedPlanetIndex ? juce::Colour::fromRGBA (255, 168, 84, 72)
-                                              : juce::Colour::fromRGBA (12, 22, 52, 182));
-        g.fillRoundedRectangle (row, 8.0f);
-        g.setColour (i == selectedPlanetIndex ? juce::Colour::fromRGBA (255, 212, 140, 188)
-                                              : juce::Colour::fromRGBA (102, 182, 255, 38));
-        g.drawRoundedRectangle (row, 8.0f, i == selectedPlanetIndex ? 1.7f : 1.1f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, i == selectedPlanetIndex ? 24 : 12));
-        g.fillRoundedRectangle (row.reduced (3.0f, 3.0f).withHeight (row.getHeight() * 0.18f), 3.0f);
+        drawInsetCard (g, row, i == selectedPlanetIndex
+                                  ? juce::Colour::fromRGBA (255, 212, 140, 214)
+                                  : juce::Colour::fromRGBA (102, 182, 255, 96),
+                       11.0f);
         g.setColour (isGalaxySystemDiscovered (selectedSystemIndex) ? planet.accent : juce::Colour::fromRGB (156, 164, 182));
         g.fillEllipse (row.removeFromLeft (28.0f).reduced (4.0f));
         auto text = row.reduced (8.0f * uiScale, 5.0f * uiScale);
@@ -6051,10 +6063,7 @@ void GameComponent::drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> are
 
     inner.removeFromTop (8.0f * uiScale);
     auto footerRow = inner.removeFromTop (42.0f * uiScale);
-    g.setColour (juce::Colour::fromRGBA (12, 22, 52, 198));
-    g.fillRoundedRectangle (footerRow, 8.0f);
-    g.setColour (juce::Colour::fromRGBA (102, 182, 255, 42));
-    g.drawRoundedRectangle (footerRow, 8.0f, 1.0f);
+    drawInfoPill (g, footerRow, selectedRegionColour.withAlpha (0.72f));
     g.setColour (juce::Colour::fromRGBA (216, 232, 255, 226));
     g.setFont (juce::FontOptions (11.5f * uiScale));
     g.drawFittedText ((galaxyStatusMessage.isNotEmpty() ? galaxyStatusMessage + "   |   " : juce::String())
@@ -6347,29 +6356,17 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     const auto performanceColour = getPlanetPerformanceModeColour (planet.assignedPerformanceMode);
     const auto identityColour = getPlanetIdentityColour (planet);
 
-    auto left = area.removeFromLeft (area.proportionOfWidth (0.50f)).reduced (8);
-    auto right = area.reduced (12);
+    auto content = area.reduced (16);
+    auto left = content.removeFromLeft (content.proportionOfWidth (0.50f)).reduced (4);
+    content.removeFromLeft (18);
+    auto right = content.reduced (4);
     const float uiScale = juce::jlimit (0.82f, 1.0f,
                                         juce::jmin (right.getWidth() / 700.0f,
                                                     right.getHeight() / 860.0f));
 
     auto drawReferencePanel = [&] (juce::Rectangle<int> bounds)
     {
-        auto panel = bounds.toFloat();
-        juce::ColourGradient hudGradient (juce::Colour::fromRGBA (11, 18, 44, 238),
-                                          panel.getX(), panel.getY(),
-                                          juce::Colour::fromRGBA (16, 28, 68, 228),
-                                          panel.getRight(), panel.getBottom(),
-                                          false);
-        hudGradient.addColour (0.38, juce::Colour::fromRGBA (34, 98, 198, 132));
-        g.setGradientFill (hudGradient);
-        g.fillRoundedRectangle (panel, 12.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 30));
-        g.fillRoundedRectangle (panel.reduced (4.0f, 4.0f).withHeight (panel.getHeight() * 0.16f), 6.0f);
-        g.setColour (juce::Colour::fromRGBA (118, 236, 255, 178));
-        g.drawRoundedRectangle (panel, 12.0f, 1.8f);
-        g.setColour (juce::Colour::fromRGBA (28, 54, 104, 255));
-        g.drawRoundedRectangle (panel.reduced (4.0f), 8.0f, 1.0f);
+        drawPanel (g, bounds, identityColour.interpolatedWith (performanceColour, 0.46f));
     };
 
     drawReferencePanel (left);
@@ -6580,32 +6577,18 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
         return;
     }
 
-    area = area.reduced (14);
+    area = area.reduced (16);
     auto gridArea = area.removeFromLeft (area.proportionOfWidth (0.64f));
     area.removeFromLeft (18);
-    auto infoArea = area.reduced (10);
-    gridArea = gridArea.reduced (10).withTrimmedLeft (10).withTrimmedBottom (10);
+    auto infoArea = area.reduced (4);
+    gridArea = gridArea.reduced (4);
     infoArea = infoArea.withY (gridArea.getY()).withHeight (gridArea.getHeight());
     const float uiScale = juce::jlimit (0.80f, 1.0f,
                                         juce::jmin (infoArea.getWidth() / 700.0f,
                                                     infoArea.getHeight() / 900.0f));
     auto drawReferencePanel = [&] (juce::Rectangle<int> bounds)
     {
-        auto panel = bounds.toFloat();
-        juce::ColourGradient hudGradient (juce::Colour::fromRGBA (11, 18, 44, 238),
-                                          panel.getX(), panel.getY(),
-                                          juce::Colour::fromRGBA (16, 28, 68, 228),
-                                          panel.getRight(), panel.getBottom(),
-                                          false);
-        hudGradient.addColour (0.38, juce::Colour::fromRGBA (34, 98, 198, 132));
-        g.setGradientFill (hudGradient);
-        g.fillRoundedRectangle (panel, 12.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 30));
-        g.fillRoundedRectangle (panel.reduced (4.0f, 4.0f).withHeight (panel.getHeight() * 0.16f), 6.0f);
-        g.setColour (juce::Colour::fromRGBA (118, 236, 255, 178));
-        g.drawRoundedRectangle (panel, 12.0f, 1.8f);
-        g.setColour (juce::Colour::fromRGBA (28, 54, 104, 255));
-        g.drawRoundedRectangle (panel.reduced (4.0f), 8.0f, 1.0f);
+        drawPanel (g, bounds, juce::Colour::fromRGBA (132, 224, 255, 220));
     };
 
     drawReferencePanel (gridArea);
@@ -6622,15 +6605,10 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
     else
         drawIsometricBuilder (g, gridArea);
 
-    auto inner = infoArea.toFloat().reduced (18.0f * uiScale, 16.0f * uiScale);
+    auto inner = infoArea.toFloat().reduced (20.0f * uiScale, 20.0f * uiScale);
     auto drawCard = [&] (juce::Rectangle<float> bounds, float radius = 8.0f)
     {
-        g.setColour (juce::Colour::fromRGBA (13, 23, 54, 224));
-        g.fillRoundedRectangle (bounds, radius);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 18));
-        g.fillRoundedRectangle (bounds.reduced (3.0f, 3.0f).withHeight (bounds.getHeight() * 0.16f), 3.0f);
-        g.setColour (juce::Colour::fromRGBA (102, 182, 255, 52));
-        g.drawRoundedRectangle (bounds, radius, 1.1f);
+        drawInsetCard (g, bounds, juce::Colour::fromRGBA (102, 182, 255, 128), radius + 4.0f);
     };
 
     auto drawLabel = [&] (juce::Rectangle<float> bounds, const juce::String& label)
@@ -7244,23 +7222,12 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
 
 void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<float> area)
 {
-    auto panel = area.reduced (10.0f);
-    juce::ColourGradient sidebarGradient (juce::Colour::fromRGBA (8, 14, 34, 238),
-                                         panel.getX(), panel.getY(),
-                                         juce::Colour::fromRGBA (16, 28, 66, 224),
-                                         panel.getRight(), panel.getBottom(),
-                                         false);
-    g.setGradientFill (sidebarGradient);
-    g.fillRoundedRectangle (panel, 24.0f);
-    g.setColour (juce::Colour::fromRGBA (124, 220, 255, 92));
-    g.drawRoundedRectangle (panel, 24.0f, 1.4f);
+    auto panel = area.reduced (4.0f);
+    drawPanel (g, panel.toNearestInt(), juce::Colour::fromRGBA (124, 220, 255, 220));
 
-    auto inner = panel.reduced (18.0f, 18.0f);
+    auto inner = panel.reduced (20.0f, 20.0f);
     auto badge = inner.removeFromTop (34.0f);
-    g.setColour (juce::Colour::fromRGBA (92, 236, 255, 26));
-    g.fillRoundedRectangle (badge, 16.0f);
-    g.setColour (juce::Colour::fromRGBA (124, 236, 255, 150));
-    g.drawRoundedRectangle (badge, 16.0f, 1.2f);
+    drawInfoPill (g, badge, juce::Colour::fromRGBA (124, 236, 255, 220));
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (15.0f));
     g.drawText ("PERFORMANCE MODE", badge.toNearestInt(), juce::Justification::centred);
@@ -7268,10 +7235,7 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
     inner.removeFromTop (14.0f);
     auto drawCard = [&] (juce::Rectangle<float> bounds, const juce::String& label, const juce::String& value, const juce::String& sub)
     {
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 15));
-        g.fillRoundedRectangle (bounds, 18.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 24));
-        g.drawRoundedRectangle (bounds, 18.0f, 1.0f);
+        drawInsetCard (g, bounds, juce::Colour::fromRGBA (124, 220, 255, 110), 18.0f);
         auto content = bounds.reduced (14.0f, 12.0f);
         g.setColour (juce::Colour::fromRGBA (150, 216, 255, 168));
         g.setFont (juce::FontOptions (11.0f));
@@ -7335,10 +7299,7 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
               "Key " + getPerformanceKeyName());
     inner.removeFromTop (16.0f);
 
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 12));
-    g.fillRoundedRectangle (inner, 18.0f);
-    g.setColour (juce::Colour::fromRGBA (255, 255, 255, 24));
-    g.drawRoundedRectangle (inner, 18.0f, 1.0f);
+    drawInsetCard (g, inner, juce::Colour::fromRGBA (124, 220, 255, 110), 18.0f);
     auto infoBlock = inner.reduced (14.0f, 12.0f);
     g.setColour (juce::Colour::fromRGBA (150, 216, 255, 168));
     g.setFont (juce::FontOptions (11.0f));
