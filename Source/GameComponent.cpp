@@ -4448,7 +4448,7 @@ juce::var GameComponent::serialiseVoyageSession() const
     juce::Array<juce::var> discoveredArray;
     discoveredArray.ensureStorageAllocated (static_cast<int> (discoveredGalaxySystems.size()));
     for (const auto discovered : discoveredGalaxySystems)
-        discoveredArray.add (discovered);
+        discoveredArray.add (static_cast<bool> (discovered));
     object->setProperty ("discoveredGalaxySystems", juce::var (discoveredArray));
 
     auto* fp = new juce::DynamicObject();

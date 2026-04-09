@@ -1,13 +1,23 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(KlangKunstGalaxy VERSION 0.1.0 LANGUAGES CXX)
+project(KlangKunstGalaxy VERSION 0.1.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT DEFINED JUCE_DIR)
-    set(JUCE_DIR "C:/Users/matda/Documents/Playground/SAMvoice/JUCE" CACHE PATH "Path to JUCE")
+    set(_juce_default_path "${CMAKE_CURRENT_SOURCE_DIR}/JUCE")
+
+    if(EXISTS "${_juce_default_path}/CMakeLists.txt")
+        set(JUCE_DIR "${_juce_default_path}" CACHE PATH "Path to JUCE")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../Fabric/JUCE/CMakeLists.txt")
+        set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Fabric/JUCE" CACHE PATH "Path to JUCE")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../Granny/JUCE/CMakeLists.txt")
+        set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Granny/JUCE" CACHE PATH "Path to JUCE")
+    else()
+        set(JUCE_DIR "C:/Users/matda/Documents/Playground/SAMvoice/JUCE" CACHE PATH "Path to JUCE")
+    endif()
 endif()
 
 add_subdirectory(${JUCE_DIR} JUCE)
