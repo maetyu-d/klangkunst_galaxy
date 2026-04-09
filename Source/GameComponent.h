@@ -457,6 +457,8 @@ private:
     void stepPerformanceRipples();
     void stepPerformanceSequencers();
     void stepPerformanceTenori();
+    juce::Point<int> rotatePerformanceDirectionClockwise (juce::Point<int> direction) const noexcept;
+    void placePerformanceDiscAt (juce::Point<int> cell, bool rotateExisting);
     bool hasPerformanceTrackAt (juce::Point<int> cell) const noexcept;
     bool getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept;
     void drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area);

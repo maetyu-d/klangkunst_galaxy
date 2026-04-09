@@ -1187,15 +1187,7 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
 
                 if (performancePlacementMode == PerformancePlacementMode::placeDisc)
                 {
-                    const auto it = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
-                                                  [cell] (const PerformanceDisc& disc) { return disc.cell == *cell; });
-                    if (it != performanceDiscs.end())
-                        it->direction = performanceSelectedDirection;
-                    else
-                        performanceDiscs.push_back ({ *cell, performanceSelectedDirection });
-
-                    performanceSelection = { PerformanceSelection::Kind::disc, *cell };
-                    performanceFlashes.push_back ({ *cell, juce::Colour::fromRGBA (255, 208, 112, 255), 1.0f, true });
+                    placePerformanceDiscAt (*cell, performanceAgentMode == PerformanceAgentMode::snakes);
                 }
                 else if (performancePlacementMode == PerformancePlacementMode::placeTrack)
                 {
@@ -1533,6 +1525,15 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
                     performancePlacementMode = PerformancePlacementMode::placeDisc;
                 }
                 performanceSelection = {};
+                repaint();
+                return true;
+            }
+            if ((key == juce::KeyPress::spaceKey || key == juce::KeyPress::returnKey)
+                && performanceAgentMode == PerformanceAgentMode::snakes
+                && performanceHoverCell.has_value())
+            {
+                performancePlacementMode = PerformancePlacementMode::placeDisc;
+                placePerformanceDiscAt (*performanceHoverCell, true);
                 repaint();
                 return true;
             }
@@ -2864,6 +2865,35 @@ void GameComponent::setPerformanceAgentCount (int count)
 {
     performanceAgentCount = juce::jlimit (0, 8, count);
     resetPerformanceAgents();
+}
+
+juce::Point<int> GameComponent::rotatePerformanceDirectionClockwise (juce::Point<int> direction) const noexcept
+{
+    static const std::array<juce::Point<int>, 4> directions { juce::Point<int> { 1, 0 }, juce::Point<int> { 0, 1 },
+                                                               juce::Point<int> { -1, 0 }, juce::Point<int> { 0, -1 } };
+    const auto it = std::find (directions.begin(), directions.end(), direction);
+    const auto index = it != directions.end() ? std::distance (directions.begin(), it) : 0;
+    return directions[static_cast<size_t> ((index + 1) % static_cast<int> (directions.size()))];
+}
+
+void GameComponent::placePerformanceDiscAt (juce::Point<int> cell, bool rotateExisting)
+{
+    const auto it = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                  [cell] (const PerformanceDisc& disc) { return disc.cell == cell; });
+
+    if (it != performanceDiscs.end())
+    {
+        it->direction = rotateExisting ? rotatePerformanceDirectionClockwise (it->direction)
+                                       : performanceSelectedDirection;
+        performanceSelectedDirection = it->direction;
+    }
+    else
+    {
+        performanceDiscs.push_back ({ cell, performanceSelectedDirection });
+    }
+
+    performanceSelection = { PerformanceSelection::Kind::disc, cell };
+    performanceFlashes.push_back ({ cell, juce::Colour::fromRGBA (255, 208, 112, 255), 1.0f, true });
 }
 
 bool GameComponent::hasPerformanceTrackAt (juce::Point<int> cell) const noexcept
@@ -7268,33 +7298,43 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
 
         const juce::Point<float> dir (static_cast<float> (disc.direction.x), static_cast<float> (disc.direction.y));
         const juce::Point<float> perp (-dir.y, dir.x);
-        const auto tip = centre + dir * (radius * 1.12f);
-        const auto base = centre - dir * (radius * 0.14f);
-        const auto tailStart = centre - dir * (radius * 0.58f);
-        const auto tailEnd = centre + dir * (radius * 0.40f);
+        const auto tip = centre + dir * (radius * 1.20f);
+        const auto base = centre - dir * (radius * 0.06f);
+        const auto tailStart = centre - dir * (radius * 0.66f);
+        const auto tailEnd = centre + dir * (radius * 0.32f);
 
         juce::Path pointerShadow;
-        pointerShadow.startNewSubPath (base + perp * (radius * 0.34f));
+        pointerShadow.startNewSubPath (base + perp * (radius * 0.42f));
         pointerShadow.lineTo (tip + dir * (radius * 0.10f));
-        pointerShadow.lineTo (base - perp * (radius * 0.34f));
+        pointerShadow.lineTo (base - perp * (radius * 0.42f));
         pointerShadow.closeSubPath();
         g.setColour (glowColour.withAlpha (hovered ? 0.28f : 0.20f));
         g.fillPath (pointerShadow);
 
-        g.setColour (ringColour.withAlpha (0.70f));
-        g.drawLine ({ tailStart, tailEnd }, hovered ? 4.2f : 3.4f);
-        g.setColour (juce::Colours::white.withAlpha (0.80f));
-        g.drawLine ({ centre - dir * (radius * 0.44f), centre + dir * (radius * 0.26f) }, hovered ? 1.8f : 1.4f);
+        g.setColour (juce::Colour::fromRGBA (6, 12, 26, hovered ? 228 : 210));
+        g.drawLine ({ tailStart, tailEnd }, hovered ? 6.0f : 5.0f);
+        g.setColour (ringColour.withAlpha (0.92f));
+        g.drawLine ({ tailStart, tailEnd }, hovered ? 3.8f : 3.1f);
+        g.setColour (juce::Colours::white.withAlpha (0.92f));
+        g.drawLine ({ centre - dir * (radius * 0.50f), centre + dir * (radius * 0.18f) }, hovered ? 1.8f : 1.5f);
 
         juce::Path arrow;
-        arrow.startNewSubPath (base + perp * (radius * 0.28f));
+        arrow.startNewSubPath (base + perp * (radius * 0.44f));
         arrow.lineTo (tip);
-        arrow.lineTo (base - perp * (radius * 0.28f));
+        arrow.lineTo (base - perp * (radius * 0.44f));
         arrow.closeSubPath();
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 238));
+        g.setColour (juce::Colour::fromRGBA (6, 12, 26, hovered ? 236 : 220));
+        g.strokePath (arrow, juce::PathStrokeType (hovered ? 3.2f : 2.7f, juce::PathStrokeType::JointStyle::curved));
+        g.setColour (juce::Colour::fromRGBA (255, 252, 246, 246));
         g.fillPath (arrow);
-        g.setColour (juce::Colour::fromRGBA (8, 16, 34, 190));
-        g.strokePath (arrow, juce::PathStrokeType (1.2f));
+        juce::Path arrowHighlight;
+        arrowHighlight.startNewSubPath (base + perp * (radius * 0.17f) - dir * (radius * 0.05f));
+        arrowHighlight.lineTo (tip - dir * (radius * 0.22f));
+        arrowHighlight.lineTo (base - perp * (radius * 0.17f) - dir * (radius * 0.05f));
+        arrowHighlight.closeSubPath();
+        g.setColour (hovered ? juce::Colour::fromRGBA (255, 244, 192, 240)
+                             : juce::Colour::fromRGBA (124, 238, 255, 214));
+        g.strokePath (arrowHighlight, juce::PathStrokeType (hovered ? 2.0f : 1.6f, juce::PathStrokeType::JointStyle::curved));
 
         auto nose = juce::Rectangle<float> (radius * 0.34f, radius * 0.34f)
                         .withCentre (centre + dir * (radius * 0.62f));
@@ -7470,9 +7510,10 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
     const juce::String help =
         "P return to build\n"
         "Click place/select\n"
+        "Space/Return drop disc in Snakes\n"
         "Backspace delete selected\n"
         "Arrow keys disc direction\n"
-        "Y disc tool / rotate dir\n"
+        "Y disc tool / rotate preview\n"
         "T track tool / rotate track\n"
         "U select tool\n"
         "I toggle orbit centre\n"
