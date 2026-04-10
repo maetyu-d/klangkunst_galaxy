@@ -7196,162 +7196,67 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
         const bool connectUp = connects ({ 0, -1 });
         const bool connectDown = connects ({ 0, 1 });
 
-        const float ballastThickness = tileSize * 0.26f;
-        const float railThickness = tileSize * 0.065f;
-        const float railGauge = tileSize * 0.16f;
-        const float sleeperThickness = tileSize * 0.09f;
-        const float sleeperLength = tileSize * 0.42f;
-        const float railOverlap = tileSize * 0.045f;
+        const float trackThickness = tileSize * 0.18f;
+        const float trackGlowThickness = trackThickness * 1.85f;
+        const float trackHighlightThickness = trackThickness * 0.34f;
+        const float trackOverlap = tileSize * 0.055f;
 
-        auto drawSleeper = [&] (juce::Rectangle<float> sleeper)
+        auto strokeTrackPath = [&] (const juce::Path& path)
         {
-            g.setColour (juce::Colour::fromRGBA (10, 18, 38, 196));
-            g.fillRoundedRectangle (sleeper, 3.0f);
-            g.setColour (juce::Colour::fromRGBA (214, 236, 255, 58));
-            g.drawRoundedRectangle (sleeper, 3.0f, 0.9f);
-        };
-
-        auto strokeOffsetPath = [&] (const juce::Path& path, float dx, float dy, juce::Colour base, float thickness)
-        {
-            auto shifted = path;
-            shifted.applyTransform (juce::AffineTransform::translation (dx, dy));
-            g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
-            g.strokePath (shifted, juce::PathStrokeType (thickness * 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            g.setColour (base);
-            g.strokePath (shifted, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            g.setColour (juce::Colours::white.withAlpha (0.72f));
-            g.strokePath (shifted, juce::PathStrokeType (thickness * 0.34f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        };
-
-        auto strokeRailPath = [&] (const juce::Path& path)
-        {
-            g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
-            g.strokePath (path, juce::PathStrokeType (railThickness * 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            g.setColour (juce::Colour::fromRGBA (104, 236, 255, 214));
-            g.strokePath (path, juce::PathStrokeType (railThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-            g.setColour (juce::Colours::white.withAlpha (0.72f));
-            g.strokePath (path, juce::PathStrokeType (railThickness * 0.34f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        };
-
-        auto drawCornerTrack = [&] (const char* topology)
-        {
-            std::array<std::pair<juce::Point<float>, float>, 2> sleepers {};
-            juce::Path outerRail;
-            juce::Path innerRail;
-            juce::Point<float> control;
-
-            if (std::strcmp (topology, "ur") == 0)
-            {
-                control = { tile.getRight(), tile.getY() };
-                outerRail.startNewSubPath (tile.getCentreX() - railGauge * 0.5f, tile.getY() - railOverlap);
-                outerRail.quadraticTo (control.x, control.y, tile.getRight() + railOverlap, tile.getCentreY() + railGauge * 0.5f);
-                innerRail.startNewSubPath (tile.getCentreX() + railGauge * 0.5f, tile.getY() - railOverlap);
-                innerRail.quadraticTo (control.x, control.y, tile.getRight() + railOverlap, tile.getCentreY() - railGauge * 0.5f);
-                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.12f, tile.getCentreY() - tileSize * 0.24f), -0.65f },
-                             std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.26f, tile.getCentreY() - tileSize * 0.10f), -1.0f } };
-            }
-            else if (std::strcmp (topology, "rd") == 0)
-            {
-                control = { tile.getRight(), tile.getBottom() };
-                outerRail.startNewSubPath (tile.getRight() + railOverlap, tile.getCentreY() - railGauge * 0.5f);
-                outerRail.quadraticTo (control.x, control.y, tile.getCentreX() - railGauge * 0.5f, tile.getBottom() + railOverlap);
-                innerRail.startNewSubPath (tile.getRight() + railOverlap, tile.getCentreY() + railGauge * 0.5f);
-                innerRail.quadraticTo (control.x, control.y, tile.getCentreX() + railGauge * 0.5f, tile.getBottom() + railOverlap);
-                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.24f, tile.getCentreY() + tileSize * 0.10f), 1.0f },
-                             std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.10f, tile.getCentreY() + tileSize * 0.24f), 0.65f } };
-            }
-            else if (std::strcmp (topology, "dl") == 0)
-            {
-                control = { tile.getX(), tile.getBottom() };
-                outerRail.startNewSubPath (tile.getCentreX() + railGauge * 0.5f, tile.getBottom() + railOverlap);
-                outerRail.quadraticTo (control.x, control.y, tile.getX() - railOverlap, tile.getCentreY() - railGauge * 0.5f);
-                innerRail.startNewSubPath (tile.getCentreX() - railGauge * 0.5f, tile.getBottom() + railOverlap);
-                innerRail.quadraticTo (control.x, control.y, tile.getX() - railOverlap, tile.getCentreY() + railGauge * 0.5f);
-                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.10f, tile.getCentreY() + tileSize * 0.24f), -0.65f },
-                             std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.24f, tile.getCentreY() + tileSize * 0.10f), -1.0f } };
-            }
-            else
-            {
-                control = { tile.getX(), tile.getY() };
-                outerRail.startNewSubPath (tile.getX() - railOverlap, tile.getCentreY() + railGauge * 0.5f);
-                outerRail.quadraticTo (control.x, control.y, tile.getCentreX() + railGauge * 0.5f, tile.getY() - railOverlap);
-                innerRail.startNewSubPath (tile.getX() - railOverlap, tile.getCentreY() - railGauge * 0.5f);
-                innerRail.quadraticTo (control.x, control.y, tile.getCentreX() - railGauge * 0.5f, tile.getY() - railOverlap);
-                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.24f, tile.getCentreY() - tileSize * 0.10f), 1.0f },
-                             std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.10f, tile.getCentreY() - tileSize * 0.24f), 0.65f } };
-            }
-
-            juce::Path ballast;
-            const auto start = outerRail.getPointAlongPath (0.0f);
-            ballast.startNewSubPath (start);
-            ballast.quadraticTo (control, outerRail.getCurrentPosition());
-            g.setColour (juce::Colour::fromRGBA (10, 20, 36, 148));
-            g.strokePath (ballast, juce::PathStrokeType (ballastThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-            strokeRailPath (outerRail);
-            strokeRailPath (innerRail);
-
-            for (const auto& [centre, rotation] : sleepers)
-            {
-                auto sleeper = juce::Rectangle<float> (sleeperThickness, sleeperLength).withCentre (centre);
-                auto sleeperPath = juce::Path();
-                sleeperPath.addRoundedRectangle (sleeper, 3.0f);
-                sleeperPath.applyTransform (juce::AffineTransform::rotation (rotation, centre.x, centre.y));
-                g.setColour (juce::Colour::fromRGBA (10, 18, 38, 196));
-                g.fillPath (sleeperPath);
-                g.setColour (juce::Colour::fromRGBA (214, 236, 255, 58));
-                g.strokePath (sleeperPath, juce::PathStrokeType (0.9f));
-            }
+            g.setColour (juce::Colour::fromRGBA (8, 16, 30, 208));
+            g.strokePath (path, juce::PathStrokeType (trackGlowThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colour::fromRGBA (104, 236, 255, 218));
+            g.strokePath (path, juce::PathStrokeType (trackThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colours::white.withAlpha (0.74f));
+            g.strokePath (path, juce::PathStrokeType (trackHighlightThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         };
 
         auto drawHorizontalTrack = [&] (bool left, bool right)
         {
-            const float startX = left ? tile.getX() - railOverlap : tile.getCentreX();
-            const float endX = right ? tile.getRight() + railOverlap : tile.getCentreX();
-            auto ballast = juce::Rectangle<float> (startX, tile.getCentreY() - ballastThickness * 0.5f, endX - startX, ballastThickness);
-            g.setColour (juce::Colour::fromRGBA (10, 20, 36, 148));
-            g.fillRect (ballast);
-
-            for (float x : { tile.getCentreX() - tileSize * 0.22f, tile.getCentreX(), tile.getCentreX() + tileSize * 0.22f })
-                drawSleeper (juce::Rectangle<float> (sleeperThickness, sleeperLength).withCentre ({ x, tile.getCentreY() }));
-
-            for (float offset : { -railGauge * 0.5f, railGauge * 0.5f })
-            {
-                auto shadow = juce::Rectangle<float> (startX, tile.getCentreY() + offset - railThickness * 0.9f, endX - startX, railThickness * 1.8f);
-                auto rail = juce::Rectangle<float> (startX, tile.getCentreY() + offset - railThickness * 0.5f, endX - startX, railThickness);
-                auto shine = juce::Rectangle<float> (startX, tile.getCentreY() + offset - railThickness * 0.28f, endX - startX, railThickness * 0.34f);
-                g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
-                g.fillRect (shadow);
-                g.setColour (juce::Colour::fromRGBA (104, 236, 255, 214));
-                g.fillRect (rail);
-                g.setColour (juce::Colours::white.withAlpha (0.72f));
-                g.fillRect (shine);
-            }
+            juce::Path path;
+            path.startNewSubPath (left ? tile.getX() - trackOverlap : tile.getCentreX(), tile.getCentreY());
+            path.lineTo (right ? tile.getRight() + trackOverlap : tile.getCentreX(), tile.getCentreY());
+            strokeTrackPath (path);
         };
 
         auto drawVerticalTrack = [&] (bool up, bool down)
         {
-            const float startY = up ? tile.getY() - railOverlap : tile.getCentreY();
-            const float endY = down ? tile.getBottom() + railOverlap : tile.getCentreY();
-            auto ballast = juce::Rectangle<float> (tile.getCentreX() - ballastThickness * 0.5f, startY, ballastThickness, endY - startY);
-            g.setColour (juce::Colour::fromRGBA (10, 20, 36, 148));
-            g.fillRect (ballast);
+            juce::Path path;
+            path.startNewSubPath (tile.getCentreX(), up ? tile.getY() - trackOverlap : tile.getCentreY());
+            path.lineTo (tile.getCentreX(), down ? tile.getBottom() + trackOverlap : tile.getCentreY());
+            strokeTrackPath (path);
+        };
 
-            for (float y : { tile.getCentreY() - tileSize * 0.22f, tile.getCentreY(), tile.getCentreY() + tileSize * 0.22f })
-                drawSleeper (juce::Rectangle<float> (sleeperLength, sleeperThickness).withCentre ({ tile.getCentreX(), y }));
+        auto drawCornerTrack = [&] (const char* topology)
+        {
+            juce::Path path;
 
-            for (float offset : { -railGauge * 0.5f, railGauge * 0.5f })
+            if (std::strcmp (topology, "ur") == 0)
             {
-                auto shadow = juce::Rectangle<float> (tile.getCentreX() + offset - railThickness * 0.9f, startY, railThickness * 1.8f, endY - startY);
-                auto rail = juce::Rectangle<float> (tile.getCentreX() + offset - railThickness * 0.5f, startY, railThickness, endY - startY);
-                auto shine = juce::Rectangle<float> (tile.getCentreX() + offset - railThickness * 0.28f, startY, railThickness * 0.34f, endY - startY);
-                g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
-                g.fillRect (shadow);
-                g.setColour (juce::Colour::fromRGBA (104, 236, 255, 214));
-                g.fillRect (rail);
-                g.setColour (juce::Colours::white.withAlpha (0.72f));
-                g.fillRect (shine);
+                path.startNewSubPath (tile.getCentreX(), tile.getY() - trackOverlap);
+                path.lineTo (tile.getCentreX(), tile.getCentreY());
+                path.lineTo (tile.getRight() + trackOverlap, tile.getCentreY());
             }
+            else if (std::strcmp (topology, "rd") == 0)
+            {
+                path.startNewSubPath (tile.getRight() + trackOverlap, tile.getCentreY());
+                path.lineTo (tile.getCentreX(), tile.getCentreY());
+                path.lineTo (tile.getCentreX(), tile.getBottom() + trackOverlap);
+            }
+            else if (std::strcmp (topology, "dl") == 0)
+            {
+                path.startNewSubPath (tile.getCentreX(), tile.getBottom() + trackOverlap);
+                path.lineTo (tile.getCentreX(), tile.getCentreY());
+                path.lineTo (tile.getX() - trackOverlap, tile.getCentreY());
+            }
+            else
+            {
+                path.startNewSubPath (tile.getX() - trackOverlap, tile.getCentreY());
+                path.lineTo (tile.getCentreX(), tile.getCentreY());
+                path.lineTo (tile.getCentreX(), tile.getY() - trackOverlap);
+            }
+
+            strokeTrackPath (path);
         };
 
         const int topology = (connectLeft ? 1 : 0) | (connectRight ? 2 : 0) | (connectUp ? 4 : 0) | (connectDown ? 8 : 0);
@@ -7712,15 +7617,14 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
         {
             g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
             g.fillRoundedRectangle (previewCell.expanded (tileSize * 0.16f), 5.0f);
-            auto previewHorizontal = juce::Rectangle<float> (previewCell.getX(), previewCell.getCentreY() - tileSize * 0.11f,
-                                                             previewCell.getWidth(), tileSize * 0.22f);
-            auto previewVertical = juce::Rectangle<float> (previewCell.getCentreX() - tileSize * 0.11f, previewCell.getY(),
-                                                           tileSize * 0.22f, previewCell.getHeight());
+            const float previewThickness = tileSize * 0.18f;
             g.setColour (juce::Colour::fromRGBA (220, 246, 255, 220));
             if (performanceSelectedTrackKind == PerformanceTrackKind::horizontal || performanceSelectedTrackKind == PerformanceTrackKind::crossroads)
-                g.fillRoundedRectangle (previewHorizontal, 4.0f);
+                g.drawLine (previewCell.getX(), previewCell.getCentreY(),
+                            previewCell.getRight(), previewCell.getCentreY(), previewThickness);
             if (performanceSelectedTrackKind == PerformanceTrackKind::vertical || performanceSelectedTrackKind == PerformanceTrackKind::crossroads)
-                g.fillRoundedRectangle (previewVertical, 4.0f);
+                g.drawLine (previewCell.getCentreX(), previewCell.getY(),
+                            previewCell.getCentreX(), previewCell.getBottom(), previewThickness);
         }
     }
 
