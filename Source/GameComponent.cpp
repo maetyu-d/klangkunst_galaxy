@@ -1191,15 +1191,7 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
                 }
                 else if (performancePlacementMode == PerformancePlacementMode::placeTrack)
                 {
-                    const auto it = std::find_if (performanceTracks.begin(), performanceTracks.end(),
-                                                  [cell] (const PerformanceTrack& track) { return track.cell == *cell; });
-                    if (it != performanceTracks.end())
-                        it->horizontal = performanceTrackHorizontal;
-                    else
-                        performanceTracks.push_back ({ *cell, performanceTrackHorizontal });
-
-                    performanceSelection = { PerformanceSelection::Kind::track, *cell };
-                    performanceFlashes.push_back ({ *cell, juce::Colour::fromRGBA (120, 220, 255, 255), 0.9f, true });
+                    placePerformanceTrackAt (*cell, performanceAgentMode == PerformanceAgentMode::trains);
                 }
                 else
                 {
@@ -1217,7 +1209,7 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
                         if (track != performanceTracks.end())
                         {
                             performanceSelection = { PerformanceSelection::Kind::track, *cell };
-                            performanceTrackHorizontal = track->horizontal;
+                            performanceSelectedTrackKind = track->kind;
                         }
                         else
                         {
@@ -1540,9 +1532,18 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
             if (lowerChar == 't')
             {
                 if (performancePlacementMode == PerformancePlacementMode::placeTrack)
-                    performanceTrackHorizontal = ! performanceTrackHorizontal;
+                    performanceSelectedTrackKind = cyclePerformanceTrackKind (performanceSelectedTrackKind);
                 performancePlacementMode = PerformancePlacementMode::placeTrack;
                 performanceSelection = {};
+                repaint();
+                return true;
+            }
+            if ((key == juce::KeyPress::spaceKey || key == juce::KeyPress::returnKey)
+                && performanceAgentMode == PerformanceAgentMode::trains
+                && performanceHoverCell.has_value())
+            {
+                performancePlacementMode = PerformancePlacementMode::placeTrack;
+                placePerformanceTrackAt (*performanceHoverCell, true);
                 repaint();
                 return true;
             }
@@ -2585,7 +2586,7 @@ void GameComponent::resetPerformanceState()
     performanceFlashes.clear();
     performanceHoverCell.reset();
     performanceSelectedDirection = { 1, 0 };
-    performanceTrackHorizontal = true;
+    performanceSelectedTrackKind = PerformanceTrackKind::horizontal;
     performancePlacementMode = PerformancePlacementMode::selectOnly;
     performanceSelection = {};
     performanceTick = 0;
@@ -2845,8 +2846,18 @@ void GameComponent::resetPerformanceAgents()
         }
         else
         {
-            const auto start = juce::Point<int> (bounds.getX() + rng.nextInt (bounds.getWidth()),
-                                                 bounds.getY() + rng.nextInt (bounds.getHeight()));
+            juce::Point<int> start (bounds.getX() + rng.nextInt (bounds.getWidth()),
+                                    bounds.getY() + rng.nextInt (bounds.getHeight()));
+
+            if (performanceAgentMode == PerformanceAgentMode::trains && ! performanceTracks.empty())
+            {
+                const auto& seededTrack = performanceTracks[static_cast<size_t> (i % static_cast<int> (performanceTracks.size()))];
+                start = seededTrack.cell;
+                const auto directions = getConnectedTrackDirections (seededTrack.cell);
+                if (! directions.empty())
+                    snake.direction = directions[static_cast<size_t> (rng.nextInt (static_cast<int> (directions.size())))];
+            }
+
             snake.body.push_back (start);
             auto tail = start;
             for (int segment = 1; segment < snakeLength; ++segment)
@@ -2896,17 +2907,115 @@ void GameComponent::placePerformanceDiscAt (juce::Point<int> cell, bool rotateEx
     performanceFlashes.push_back ({ cell, juce::Colour::fromRGBA (255, 208, 112, 255), 1.0f, true });
 }
 
+GameComponent::PerformanceTrackKind GameComponent::cyclePerformanceTrackKind (PerformanceTrackKind kind) const noexcept
+{
+    switch (kind)
+    {
+        case PerformanceTrackKind::horizontal: return PerformanceTrackKind::vertical;
+        case PerformanceTrackKind::vertical: return PerformanceTrackKind::crossroads;
+        case PerformanceTrackKind::crossroads: return PerformanceTrackKind::horizontal;
+    }
+
+    return PerformanceTrackKind::horizontal;
+}
+
+void GameComponent::placePerformanceTrackAt (juce::Point<int> cell, bool cycleExisting)
+{
+    const auto it = std::find_if (performanceTracks.begin(), performanceTracks.end(),
+                                  [cell] (const PerformanceTrack& track) { return track.cell == cell; });
+
+    if (it != performanceTracks.end())
+    {
+        it->kind = cycleExisting ? cyclePerformanceTrackKind (it->kind)
+                                 : performanceSelectedTrackKind;
+        performanceSelectedTrackKind = it->kind;
+    }
+    else
+    {
+        performanceTracks.push_back ({ cell, performanceSelectedTrackKind });
+    }
+
+    performanceSelection = { PerformanceSelection::Kind::track, cell };
+    performanceFlashes.push_back ({ cell, juce::Colour::fromRGBA (120, 220, 255, 255), 0.9f, true });
+}
+
 bool GameComponent::hasPerformanceTrackAt (juce::Point<int> cell) const noexcept
 {
     return std::find_if (performanceTracks.begin(), performanceTracks.end(),
                          [cell] (const PerformanceTrack& track) { return track.cell == cell; }) != performanceTracks.end();
 }
 
-bool GameComponent::getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept
+GameComponent::PerformanceTrackKind GameComponent::getPerformanceTrackKindAt (juce::Point<int> cell) const noexcept
 {
     const auto it = std::find_if (performanceTracks.begin(), performanceTracks.end(),
                                   [cell] (const PerformanceTrack& track) { return track.cell == cell; });
-    return it != performanceTracks.end() ? it->horizontal : true;
+    return it != performanceTracks.end() ? it->kind : PerformanceTrackKind::horizontal;
+}
+
+std::vector<juce::Point<int>> GameComponent::getPerformanceTrackDirections (PerformanceTrackKind kind) const
+{
+    switch (kind)
+    {
+        case PerformanceTrackKind::horizontal:
+            return { juce::Point<int> { -1, 0 }, juce::Point<int> { 1, 0 } };
+        case PerformanceTrackKind::vertical:
+            return { juce::Point<int> { 0, -1 }, juce::Point<int> { 0, 1 } };
+        case PerformanceTrackKind::crossroads:
+            return { juce::Point<int> { -1, 0 }, juce::Point<int> { 1, 0 },
+                     juce::Point<int> { 0, -1 }, juce::Point<int> { 0, 1 } };
+    }
+
+    return {};
+}
+
+std::vector<juce::Point<int>> GameComponent::getConnectedTrackDirections (juce::Point<int> cell) const
+{
+    if (! hasPerformanceTrackAt (cell))
+        return {};
+
+    const auto storedKind = getPerformanceTrackKindAt (cell);
+    const auto storedDirections = getPerformanceTrackDirections (storedKind);
+    std::vector<juce::Point<int>> neighbourDirections;
+
+    static const std::array<juce::Point<int>, 4> allDirections {
+        juce::Point<int> { -1, 0 }, juce::Point<int> { 1, 0 },
+        juce::Point<int> { 0, -1 }, juce::Point<int> { 0, 1 }
+    };
+
+    for (const auto& direction : allDirections)
+    {
+        const auto neighbourCell = cell + direction;
+        if (! hasPerformanceTrackAt (neighbourCell))
+            continue;
+
+        const auto neighbourStoredDirections = getPerformanceTrackDirections (getPerformanceTrackKindAt (neighbourCell));
+        const juce::Point<int> reverse { -direction.x, -direction.y };
+        if (std::find (neighbourStoredDirections.begin(), neighbourStoredDirections.end(), reverse) != neighbourStoredDirections.end())
+            neighbourDirections.push_back (direction);
+    }
+
+    const bool hasHorizontalNeighbour = std::any_of (neighbourDirections.begin(), neighbourDirections.end(),
+                                                     [] (juce::Point<int> d) { return d.x != 0; });
+    const bool hasVerticalNeighbour = std::any_of (neighbourDirections.begin(), neighbourDirections.end(),
+                                                   [] (juce::Point<int> d) { return d.y != 0; });
+
+    if (hasHorizontalNeighbour && hasVerticalNeighbour)
+        return neighbourDirections;
+
+    std::vector<juce::Point<int>> result = neighbourDirections;
+    for (const auto& direction : storedDirections)
+        if (std::find (result.begin(), result.end(), direction) == result.end())
+            result.push_back (direction);
+
+    return result;
+}
+
+std::vector<juce::Point<int>> GameComponent::getPerformanceTrackExitDirections (juce::Point<int> cell, juce::Point<int> incomingDirection) const
+{
+    auto exits = getConnectedTrackDirections (cell);
+    const juce::Point<int> reverse { -incomingDirection.x, -incomingDirection.y };
+    exits.erase (std::remove (exits.begin(), exits.end(), reverse), exits.end());
+    return exits;
 }
 
 juce::String GameComponent::getPerformanceAgentModeName() const
@@ -2931,7 +3040,13 @@ juce::String GameComponent::getPerformancePlacementModeName() const
     {
         case PerformancePlacementMode::selectOnly: return "Select";
         case PerformancePlacementMode::placeDisc: return "Disc";
-        case PerformancePlacementMode::placeTrack: return performanceTrackHorizontal ? "Track H" : "Track V";
+        case PerformancePlacementMode::placeTrack:
+            switch (performanceSelectedTrackKind)
+            {
+                case PerformanceTrackKind::horizontal: return "Track H";
+                case PerformanceTrackKind::vertical: return "Track V";
+                case PerformanceTrackKind::crossroads: return "Track +";
+            }
     }
 
     return "Select";
@@ -4460,7 +4575,7 @@ juce::var GameComponent::serialiseVoyageSession() const
     object->setProperty ("performanceAgentCount", performanceAgentCount);
     object->setProperty ("performanceAgentMode", static_cast<int> (performanceAgentMode));
     object->setProperty ("performancePlacementMode", static_cast<int> (performancePlacementMode));
-    object->setProperty ("performanceTrackHorizontal", performanceTrackHorizontal);
+    object->setProperty ("performanceTrackKind", static_cast<int> (performanceSelectedTrackKind));
     object->setProperty ("performanceSelectedDirectionX", performanceSelectedDirection.x);
     object->setProperty ("performanceSelectedDirectionY", performanceSelectedDirection.y);
     object->setProperty ("performanceTick", performanceTick);
@@ -4551,7 +4666,7 @@ juce::var GameComponent::serialiseVoyageSession() const
             auto* item = new juce::DynamicObject();
             item->setProperty ("x", track.cell.x);
             item->setProperty ("y", track.cell.y);
-            item->setProperty ("horizontal", track.horizontal);
+            item->setProperty ("kind", static_cast<int> (track.kind));
             array.add (juce::var (item));
         }
         return juce::var (array);
@@ -4664,7 +4779,12 @@ void GameComponent::restoreVoyageSession (const juce::var& sessionState)
     performanceAgentCount = static_cast<int> (object->getProperty ("performanceAgentCount"));
     performanceAgentMode = static_cast<PerformanceAgentMode> (juce::jlimit (0, 6, static_cast<int> (object->getProperty ("performanceAgentMode"))));
     performancePlacementMode = static_cast<PerformancePlacementMode> (juce::jlimit (0, 2, static_cast<int> (object->getProperty ("performancePlacementMode"))));
-    performanceTrackHorizontal = static_cast<bool> (object->getProperty ("performanceTrackHorizontal"));
+    if (object->hasProperty ("performanceTrackKind"))
+        performanceSelectedTrackKind = static_cast<PerformanceTrackKind> (juce::jlimit (0, 2, static_cast<int> (object->getProperty ("performanceTrackKind"))));
+    else
+        performanceSelectedTrackKind = static_cast<bool> (object->getProperty ("performanceTrackHorizontal"))
+                                         ? PerformanceTrackKind::horizontal
+                                         : PerformanceTrackKind::vertical;
     performanceSelectedDirection = {
         static_cast<int> (object->getProperty ("performanceSelectedDirectionX")),
         static_cast<int> (object->getProperty ("performanceSelectedDirectionY"))
@@ -4759,7 +4879,10 @@ void GameComponent::restoreVoyageSession (const juce::var& sessionState)
             if (const auto* track = item.getDynamicObject(); track != nullptr)
                 performanceTracks.push_back ({
                     { static_cast<int> (track->getProperty ("x")), static_cast<int> (track->getProperty ("y")) },
-                    static_cast<bool> (track->getProperty ("horizontal"))
+                    track->hasProperty ("kind")
+                        ? static_cast<PerformanceTrackKind> (juce::jlimit (0, 2, static_cast<int> (track->getProperty ("kind"))))
+                        : (static_cast<bool> (track->getProperty ("horizontal")) ? PerformanceTrackKind::horizontal
+                                                                                  : PerformanceTrackKind::vertical)
                 });
 
     performanceRipples.clear();
@@ -7058,17 +7181,199 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
         if (! activeRegion.contains (track.cell))
             continue;
 
-        auto cell = juce::Rectangle<float> (board.getX() + track.cell.x * tileSize,
+        auto tile = juce::Rectangle<float> (board.getX() + track.cell.x * tileSize,
                                             board.getY() + track.cell.y * tileSize,
                                             tileSize,
-                                            tileSize).reduced (tileSize * 0.16f);
-        g.setColour (juce::Colour::fromRGBA (80, 230, 255, 110));
-        if (track.horizontal)
-            g.drawLine (cell.getX(), cell.getCentreY(), cell.getRight(), cell.getCentreY(), 3.0f);
-        else
-            g.drawLine (cell.getCentreX(), cell.getY(), cell.getCentreX(), cell.getBottom(), 3.0f);
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, 56));
-        g.drawRoundedRectangle (cell, 4.0f, 1.0f);
+                                            tileSize);
+        auto cell = tile.reduced (tileSize * 0.16f);
+        const auto trackDirections = getConnectedTrackDirections (track.cell);
+        const auto connects = [&] (juce::Point<int> direction)
+        {
+            return std::find (trackDirections.begin(), trackDirections.end(), direction) != trackDirections.end();
+        };
+        const bool connectLeft = connects ({ -1, 0 });
+        const bool connectRight = connects ({ 1, 0 });
+        const bool connectUp = connects ({ 0, -1 });
+        const bool connectDown = connects ({ 0, 1 });
+
+        const float ballastThickness = tileSize * 0.26f;
+        const float railThickness = tileSize * 0.065f;
+        const float railGauge = tileSize * 0.16f;
+        const float sleeperThickness = tileSize * 0.09f;
+        const float sleeperLength = tileSize * 0.42f;
+        const float railOverlap = tileSize * 0.045f;
+
+        auto drawSleeper = [&] (juce::Rectangle<float> sleeper)
+        {
+            g.setColour (juce::Colour::fromRGBA (10, 18, 38, 196));
+            g.fillRoundedRectangle (sleeper, 3.0f);
+            g.setColour (juce::Colour::fromRGBA (214, 236, 255, 58));
+            g.drawRoundedRectangle (sleeper, 3.0f, 0.9f);
+        };
+
+        auto strokeOffsetPath = [&] (const juce::Path& path, float dx, float dy, juce::Colour base, float thickness)
+        {
+            auto shifted = path;
+            shifted.applyTransform (juce::AffineTransform::translation (dx, dy));
+            g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
+            g.strokePath (shifted, juce::PathStrokeType (thickness * 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (base);
+            g.strokePath (shifted, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colours::white.withAlpha (0.72f));
+            g.strokePath (shifted, juce::PathStrokeType (thickness * 0.34f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        };
+
+        auto strokeRailPath = [&] (const juce::Path& path)
+        {
+            g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
+            g.strokePath (path, juce::PathStrokeType (railThickness * 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colour::fromRGBA (104, 236, 255, 214));
+            g.strokePath (path, juce::PathStrokeType (railThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colours::white.withAlpha (0.72f));
+            g.strokePath (path, juce::PathStrokeType (railThickness * 0.34f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        };
+
+        auto drawCornerTrack = [&] (const char* topology)
+        {
+            std::array<std::pair<juce::Point<float>, float>, 2> sleepers {};
+            juce::Path outerRail;
+            juce::Path innerRail;
+            juce::Point<float> control;
+
+            if (std::strcmp (topology, "ur") == 0)
+            {
+                control = { tile.getRight(), tile.getY() };
+                outerRail.startNewSubPath (tile.getCentreX() - railGauge * 0.5f, tile.getY() - railOverlap);
+                outerRail.quadraticTo (control.x, control.y, tile.getRight() + railOverlap, tile.getCentreY() + railGauge * 0.5f);
+                innerRail.startNewSubPath (tile.getCentreX() + railGauge * 0.5f, tile.getY() - railOverlap);
+                innerRail.quadraticTo (control.x, control.y, tile.getRight() + railOverlap, tile.getCentreY() - railGauge * 0.5f);
+                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.12f, tile.getCentreY() - tileSize * 0.24f), -0.65f },
+                             std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.26f, tile.getCentreY() - tileSize * 0.10f), -1.0f } };
+            }
+            else if (std::strcmp (topology, "rd") == 0)
+            {
+                control = { tile.getRight(), tile.getBottom() };
+                outerRail.startNewSubPath (tile.getRight() + railOverlap, tile.getCentreY() - railGauge * 0.5f);
+                outerRail.quadraticTo (control.x, control.y, tile.getCentreX() - railGauge * 0.5f, tile.getBottom() + railOverlap);
+                innerRail.startNewSubPath (tile.getRight() + railOverlap, tile.getCentreY() + railGauge * 0.5f);
+                innerRail.quadraticTo (control.x, control.y, tile.getCentreX() + railGauge * 0.5f, tile.getBottom() + railOverlap);
+                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.24f, tile.getCentreY() + tileSize * 0.10f), 1.0f },
+                             std::pair { juce::Point<float> (tile.getCentreX() + tileSize * 0.10f, tile.getCentreY() + tileSize * 0.24f), 0.65f } };
+            }
+            else if (std::strcmp (topology, "dl") == 0)
+            {
+                control = { tile.getX(), tile.getBottom() };
+                outerRail.startNewSubPath (tile.getCentreX() + railGauge * 0.5f, tile.getBottom() + railOverlap);
+                outerRail.quadraticTo (control.x, control.y, tile.getX() - railOverlap, tile.getCentreY() - railGauge * 0.5f);
+                innerRail.startNewSubPath (tile.getCentreX() - railGauge * 0.5f, tile.getBottom() + railOverlap);
+                innerRail.quadraticTo (control.x, control.y, tile.getX() - railOverlap, tile.getCentreY() + railGauge * 0.5f);
+                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.10f, tile.getCentreY() + tileSize * 0.24f), -0.65f },
+                             std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.24f, tile.getCentreY() + tileSize * 0.10f), -1.0f } };
+            }
+            else
+            {
+                control = { tile.getX(), tile.getY() };
+                outerRail.startNewSubPath (tile.getX() - railOverlap, tile.getCentreY() + railGauge * 0.5f);
+                outerRail.quadraticTo (control.x, control.y, tile.getCentreX() + railGauge * 0.5f, tile.getY() - railOverlap);
+                innerRail.startNewSubPath (tile.getX() - railOverlap, tile.getCentreY() - railGauge * 0.5f);
+                innerRail.quadraticTo (control.x, control.y, tile.getCentreX() - railGauge * 0.5f, tile.getY() - railOverlap);
+                sleepers = { std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.24f, tile.getCentreY() - tileSize * 0.10f), 1.0f },
+                             std::pair { juce::Point<float> (tile.getCentreX() - tileSize * 0.10f, tile.getCentreY() - tileSize * 0.24f), 0.65f } };
+            }
+
+            juce::Path ballast;
+            const auto start = outerRail.getPointAlongPath (0.0f);
+            ballast.startNewSubPath (start);
+            ballast.quadraticTo (control, outerRail.getCurrentPosition());
+            g.setColour (juce::Colour::fromRGBA (10, 20, 36, 148));
+            g.strokePath (ballast, juce::PathStrokeType (ballastThickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+            strokeRailPath (outerRail);
+            strokeRailPath (innerRail);
+
+            for (const auto& [centre, rotation] : sleepers)
+            {
+                auto sleeper = juce::Rectangle<float> (sleeperThickness, sleeperLength).withCentre (centre);
+                auto sleeperPath = juce::Path();
+                sleeperPath.addRoundedRectangle (sleeper, 3.0f);
+                sleeperPath.applyTransform (juce::AffineTransform::rotation (rotation, centre.x, centre.y));
+                g.setColour (juce::Colour::fromRGBA (10, 18, 38, 196));
+                g.fillPath (sleeperPath);
+                g.setColour (juce::Colour::fromRGBA (214, 236, 255, 58));
+                g.strokePath (sleeperPath, juce::PathStrokeType (0.9f));
+            }
+        };
+
+        auto drawHorizontalTrack = [&] (bool left, bool right)
+        {
+            const float startX = left ? tile.getX() - railOverlap : tile.getCentreX();
+            const float endX = right ? tile.getRight() + railOverlap : tile.getCentreX();
+            auto ballast = juce::Rectangle<float> (startX, tile.getCentreY() - ballastThickness * 0.5f, endX - startX, ballastThickness);
+            g.setColour (juce::Colour::fromRGBA (10, 20, 36, 148));
+            g.fillRect (ballast);
+
+            for (float x : { tile.getCentreX() - tileSize * 0.22f, tile.getCentreX(), tile.getCentreX() + tileSize * 0.22f })
+                drawSleeper (juce::Rectangle<float> (sleeperThickness, sleeperLength).withCentre ({ x, tile.getCentreY() }));
+
+            for (float offset : { -railGauge * 0.5f, railGauge * 0.5f })
+            {
+                auto shadow = juce::Rectangle<float> (startX, tile.getCentreY() + offset - railThickness * 0.9f, endX - startX, railThickness * 1.8f);
+                auto rail = juce::Rectangle<float> (startX, tile.getCentreY() + offset - railThickness * 0.5f, endX - startX, railThickness);
+                auto shine = juce::Rectangle<float> (startX, tile.getCentreY() + offset - railThickness * 0.28f, endX - startX, railThickness * 0.34f);
+                g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
+                g.fillRect (shadow);
+                g.setColour (juce::Colour::fromRGBA (104, 236, 255, 214));
+                g.fillRect (rail);
+                g.setColour (juce::Colours::white.withAlpha (0.72f));
+                g.fillRect (shine);
+            }
+        };
+
+        auto drawVerticalTrack = [&] (bool up, bool down)
+        {
+            const float startY = up ? tile.getY() - railOverlap : tile.getCentreY();
+            const float endY = down ? tile.getBottom() + railOverlap : tile.getCentreY();
+            auto ballast = juce::Rectangle<float> (tile.getCentreX() - ballastThickness * 0.5f, startY, ballastThickness, endY - startY);
+            g.setColour (juce::Colour::fromRGBA (10, 20, 36, 148));
+            g.fillRect (ballast);
+
+            for (float y : { tile.getCentreY() - tileSize * 0.22f, tile.getCentreY(), tile.getCentreY() + tileSize * 0.22f })
+                drawSleeper (juce::Rectangle<float> (sleeperLength, sleeperThickness).withCentre ({ tile.getCentreX(), y }));
+
+            for (float offset : { -railGauge * 0.5f, railGauge * 0.5f })
+            {
+                auto shadow = juce::Rectangle<float> (tile.getCentreX() + offset - railThickness * 0.9f, startY, railThickness * 1.8f, endY - startY);
+                auto rail = juce::Rectangle<float> (tile.getCentreX() + offset - railThickness * 0.5f, startY, railThickness, endY - startY);
+                auto shine = juce::Rectangle<float> (tile.getCentreX() + offset - railThickness * 0.28f, startY, railThickness * 0.34f, endY - startY);
+                g.setColour (juce::Colour::fromRGBA (8, 16, 30, 204));
+                g.fillRect (shadow);
+                g.setColour (juce::Colour::fromRGBA (104, 236, 255, 214));
+                g.fillRect (rail);
+                g.setColour (juce::Colours::white.withAlpha (0.72f));
+                g.fillRect (shine);
+            }
+        };
+
+        const int topology = (connectLeft ? 1 : 0) | (connectRight ? 2 : 0) | (connectUp ? 4 : 0) | (connectDown ? 8 : 0);
+        switch (topology)
+        {
+            case 0b0011: drawHorizontalTrack (true, true); break;
+            case 0b1100: drawVerticalTrack (true, true); break;
+            case 0b0110: drawCornerTrack ("ur"); break;
+            case 0b1010: drawCornerTrack ("rd"); break;
+            case 0b1001: drawCornerTrack ("dl"); break;
+            case 0b0101: drawCornerTrack ("lu"); break;
+            case 0b1111:
+                drawHorizontalTrack (true, true);
+                drawVerticalTrack (true, true);
+                break;
+            default:
+                if (connectLeft || connectRight)
+                    drawHorizontalTrack (connectLeft, connectRight);
+                if (connectUp || connectDown)
+                    drawVerticalTrack (connectUp, connectDown);
+                break;
+        }
 
         if (performanceSelection.kind == PerformanceSelection::Kind::track && performanceSelection.cell == track.cell)
         {
@@ -7407,11 +7712,15 @@ void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<floa
         {
             g.setColour (juce::Colour::fromRGBA (255, 255, 255, 42));
             g.fillRoundedRectangle (previewCell.expanded (tileSize * 0.16f), 5.0f);
+            auto previewHorizontal = juce::Rectangle<float> (previewCell.getX(), previewCell.getCentreY() - tileSize * 0.11f,
+                                                             previewCell.getWidth(), tileSize * 0.22f);
+            auto previewVertical = juce::Rectangle<float> (previewCell.getCentreX() - tileSize * 0.11f, previewCell.getY(),
+                                                           tileSize * 0.22f, previewCell.getHeight());
             g.setColour (juce::Colour::fromRGBA (220, 246, 255, 220));
-            if (performanceTrackHorizontal)
-                g.drawLine (previewCell.getX(), previewCell.getCentreY(), previewCell.getRight(), previewCell.getCentreY(), 3.0f);
-            else
-                g.drawLine (previewCell.getCentreX(), previewCell.getY(), previewCell.getCentreX(), previewCell.getBottom(), 3.0f);
+            if (performanceSelectedTrackKind == PerformanceTrackKind::horizontal || performanceSelectedTrackKind == PerformanceTrackKind::crossroads)
+                g.fillRoundedRectangle (previewHorizontal, 4.0f);
+            if (performanceSelectedTrackKind == PerformanceTrackKind::vertical || performanceSelectedTrackKind == PerformanceTrackKind::crossroads)
+                g.fillRoundedRectangle (previewVertical, 4.0f);
         }
     }
 
@@ -7511,10 +7820,11 @@ void GameComponent::drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<f
         "P return to build\n"
         "Click place/select\n"
         "Space/Return drop disc in Snakes\n"
+        "Space/Return place track in Trains\n"
         "Backspace delete selected\n"
         "Arrow keys disc direction\n"
         "Y disc tool / rotate preview\n"
-        "T track tool / rotate track\n"
+        "T track tool / cycle H V +\n"
         "U select tool\n"
         "I toggle orbit centre\n"
         "N cycle agent mode\n"
@@ -8815,37 +9125,46 @@ void GameComponent::stepPerformanceSnakes()
         if (snake.body.empty())
             continue;
 
+        auto nextHead = snake.body.front() + snake.direction;
         if (performanceAgentMode == PerformanceAgentMode::trains)
         {
             const auto head = snake.body.front();
-            std::vector<juce::Point<int>> trackOptions;
-            for (const auto& dir : snakeDirections)
-            {
-                const auto candidate = head + dir;
-                if (! inside (candidate) || occupiedByAnySnake (candidate, snakeIndex))
-                    continue;
-                if (hasPerformanceTrackAt (candidate))
-                    trackOptions.push_back (dir);
-            }
+            const auto reverse = juce::Point<int> { -snake.direction.x, -snake.direction.y };
 
-            if (! trackOptions.empty())
+            auto chooseAdjacentTrackDirection = [&]() -> std::optional<juce::Point<int>>
             {
-                const auto switchDisc = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
-                                                      [head] (const PerformanceDisc& disc) { return disc.cell == head; });
-                if (switchDisc != performanceDiscs.end()
-                    && std::find (trackOptions.begin(), trackOptions.end(), switchDisc->direction) != trackOptions.end())
+                std::vector<juce::Point<int>> options;
+                for (const auto& dir : snakeDirections)
                 {
-                    snake.direction = switchDisc->direction;
-                    performanceFlashes.push_back ({ head, juce::Colour::fromRGBA (255, 208, 112, 255), 0.72f, true });
+                    const auto candidate = head + dir;
+                    if (! inside (candidate) || occupiedByAnySnake (candidate, snakeIndex) || ! hasPerformanceTrackAt (candidate))
+                        continue;
+                    options.push_back (dir);
                 }
-                else if (std::find (trackOptions.begin(), trackOptions.end(), snake.direction) == trackOptions.end())
+
+                if (options.empty())
+                    return std::nullopt;
+
+                if (const auto it = std::find (options.begin(), options.end(), snake.direction); it != options.end())
+                    return *it;
+
+                options.erase (std::remove (options.begin(), options.end(), reverse), options.end());
+                if (options.empty())
+                    return reverse;
+
+                return options[static_cast<size_t> (juce::Random::getSystemRandom().nextInt (static_cast<int> (options.size())))];
+            };
+
+            if (! inside (nextHead) || occupiedByAnySnake (nextHead, snakeIndex) || ! hasPerformanceTrackAt (nextHead))
+            {
+                if (const auto chosen = chooseAdjacentTrackDirection())
                 {
-                    snake.direction = trackOptions.front();
+                    snake.direction = *chosen;
+                    nextHead = head + snake.direction;
                 }
             }
         }
 
-        auto nextHead = snake.body.front() + snake.direction;
         if (! inside (nextHead) || occupiedByAnySnake (nextHead, snakeIndex))
         {
             if (snake.body.size() >= 2)
@@ -8864,9 +9183,14 @@ void GameComponent::stepPerformanceSnakes()
         if (! inside (nextHead) || occupiedByAnySnake (nextHead, snakeIndex))
             continue;
 
-        if (const auto disc = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
-                                            [nextHead] (const PerformanceDisc& reflector) { return reflector.cell == nextHead; });
-            disc != performanceDiscs.end())
+        if (performanceAgentMode == PerformanceAgentMode::trains)
+        {
+            if (! hasPerformanceTrackAt (nextHead))
+                continue;
+        }
+        else if (const auto disc = std::find_if (performanceDiscs.begin(), performanceDiscs.end(),
+                                                 [nextHead] (const PerformanceDisc& reflector) { return reflector.cell == nextHead; });
+                 disc != performanceDiscs.end())
         {
             snake.direction = disc->direction;
             performanceFlashes.push_back ({ nextHead, juce::Colour::fromRGBA (255, 196, 96, 255), 1.0f, true });
@@ -8875,6 +9199,16 @@ void GameComponent::stepPerformanceSnakes()
         snake.body.insert (snake.body.begin(), nextHead);
         if (static_cast<int> (snake.body.size()) > getPerformanceSnakeLength())
             snake.body.pop_back();
+
+        if (performanceAgentMode == PerformanceAgentMode::trains)
+        {
+            auto exits = getPerformanceTrackExitDirections (nextHead, snake.direction);
+            if (! exits.empty())
+            {
+                snake.direction = exits[static_cast<size_t> (juce::Random::getSystemRandom().nextInt (static_cast<int> (exits.size())))];
+                performanceFlashes.push_back ({ nextHead, juce::Colour::fromRGBA (116, 220, 255, 255), 0.88f, true });
+            }
+        }
 
         if (snakeTriggerMode == SnakeTriggerMode::headOnly)
         {

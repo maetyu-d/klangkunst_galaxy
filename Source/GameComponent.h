@@ -179,10 +179,17 @@ private:
         juce::Point<int> direction { 1, 0 };
     };
 
+    enum class PerformanceTrackKind
+    {
+        horizontal,
+        vertical,
+        crossroads
+    };
+
     struct PerformanceTrack
     {
         juce::Point<int> cell;
-        bool horizontal = true;
+        PerformanceTrackKind kind = PerformanceTrackKind::horizontal;
     };
 
     struct PerformanceRipple
@@ -367,7 +374,7 @@ private:
     std::vector<PerformanceFlash> performanceFlashes;
     std::optional<juce::Point<int>> performanceHoverCell;
     juce::Point<int> performanceSelectedDirection { 1, 0 };
-    bool performanceTrackHorizontal = true;
+    PerformanceTrackKind performanceSelectedTrackKind = PerformanceTrackKind::horizontal;
     PerformancePlacementMode performancePlacementMode = PerformancePlacementMode::selectOnly;
     PerformanceSelection performanceSelection;
     int performanceTick = 0;
@@ -459,8 +466,13 @@ private:
     void stepPerformanceTenori();
     juce::Point<int> rotatePerformanceDirectionClockwise (juce::Point<int> direction) const noexcept;
     void placePerformanceDiscAt (juce::Point<int> cell, bool rotateExisting);
+    PerformanceTrackKind cyclePerformanceTrackKind (PerformanceTrackKind kind) const noexcept;
+    void placePerformanceTrackAt (juce::Point<int> cell, bool cycleExisting);
     bool hasPerformanceTrackAt (juce::Point<int> cell) const noexcept;
-    bool getPerformanceTrackHorizontalAt (juce::Point<int> cell) const noexcept;
+    PerformanceTrackKind getPerformanceTrackKindAt (juce::Point<int> cell) const noexcept;
+    std::vector<juce::Point<int>> getPerformanceTrackDirections (PerformanceTrackKind kind) const;
+    std::vector<juce::Point<int>> getConnectedTrackDirections (juce::Point<int> cell) const;
+    std::vector<juce::Point<int>> getPerformanceTrackExitDirections (juce::Point<int> cell, juce::Point<int> incomingDirection) const;
     void drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area);
     void drawPerformanceSidebar (juce::Graphics& g, juce::Rectangle<float> area);
     juce::String getPerformanceAgentModeName() const;
