@@ -2,6 +2,8 @@
 
 KKG is the third in a series of video game prototypes that are part musical instrument, part sound toy, and part architectural sandbox. In KKG you explore a virtual galaxy and build on and perform with the colourful planets you find. Each planet has its own distinct systems for building and performing. Building modes include the isometric building mode from the original KlangKunst, a Minecraft-like first person construction mode, a tetris-like mode, and a mode based around multi-layered cellular automata. Performance modes include snake, trains, droplet, Tenori-on-like sequencer, and beam. All changes that you make are persistent, and a dedicated logbook helps you keep track of where you have visited and what you have created.
 
+It's a WIP, but playable releases for Mac and Windows are available from: [https://github.com/maetyu-d/klangkunst_galaxy/releases](https://github.com/maetyu-d/klangkunst_galaxy/releases)
+
 ## Screenshots
 
 <img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 13 03" src="https://github.com/user-attachments/assets/5060ae5c-a5f5-4025-87ba-dc378674163c" />
