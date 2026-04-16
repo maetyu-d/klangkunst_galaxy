@@ -1,4 +1,6 @@
-KKG
+KlangKunst Galaxy
+
+KKG is the third in a series of music game prototypes that 
 
 <img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 13 03" src="https://github.com/user-attachments/assets/5060ae5c-a5f5-4025-87ba-dc378674163c" />
 
