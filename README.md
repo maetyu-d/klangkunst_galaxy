@@ -6,4 +6,12 @@ KKG
 
 <img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 13 25" src="https://github.com/user-attachments/assets/c9e3672d-a4e9-41c1-b357-2500c956af55" />
 
+<img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 14 20" src="https://github.com/user-attachments/assets/ac42c4cf-d534-47f0-a588-f38f6ae83e46" />
 
+<img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 15 46" src="https://github.com/user-attachments/assets/ecf8b199-5b6a-4d19-abc6-11b16d7248db" />
+
+<img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 16 06" src="https://github.com/user-attachments/assets/a855fe4d-2c6e-48d9-8723-85e160e8c420" />
+
+<img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 15 13" src="https://github.com/user-attachments/assets/795d0393-f175-47e7-8e65-0e035613cab2" />
+
+<img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 16 48" src="https://github.com/user-attachments/assets/994a1ccf-90b5-458b-bf0f-f3b8d71a677b" />
