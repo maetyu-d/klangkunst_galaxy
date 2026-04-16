@@ -10,6 +10,8 @@ It's a WIP, but playable releases for Mac and Windows are available from: [https
 
 <img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 13 16" src="https://github.com/user-attachments/assets/4fa5dce4-ae65-4340-997e-975440985211" />
 
+<img width="1440" height="900" alt="Screenshot 2026-04-16 at 17 36 43" src="https://github.com/user-attachments/assets/d8333f0d-46a0-4c58-9dd0-84f7d764e913" />
+
 <img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 13 25" src="https://github.com/user-attachments/assets/c9e3672d-a4e9-41c1-b357-2500c956af55" />
 
 <img width="1440" height="900" alt="Screenshot 2026-04-14 at 17 14 20" src="https://github.com/user-attachments/assets/ac42c4cf-d534-47f0-a588-f38f6ae83e46" />
