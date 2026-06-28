@@ -4778,11 +4778,12 @@ juce::Rectangle<float> GameComponent::planetScEditorParamChipBounds (juce::Recta
 {
     auto chips = overlay.reduced (28.0f, 24.0f);
     chips.removeFromTop (70.0f);
-    chips.removeFromTop (4.0f);
-    chips = chips.removeFromTop (36.0f);
+    chips.removeFromTop (18.0f);
+    chips.removeFromLeft (86.0f);
+    chips = chips.removeFromTop (24.0f);
 
     constexpr int paramCount = 6;
-    const float chipGap = 8.0f;
+    const float chipGap = 7.0f;
     const float chipWidth = (chips.getWidth() - chipGap * static_cast<float> (paramCount - 1)) / static_cast<float> (paramCount);
     chips.removeFromLeft ((chipWidth + chipGap) * static_cast<float> (index));
     return chips.removeFromLeft (chipWidth);
@@ -7421,16 +7422,32 @@ void GameComponent::drawPlanetScEditorOverlay (juce::Graphics& g, juce::Rectangl
         g.drawText (buttonLabels[static_cast<size_t> (i)], button.toNearestInt(), juce::Justification::centred);
     }
 
+    auto insertLabel = overlay.reduced (28.0f, 24.0f);
+    insertLabel.removeFromTop (88.0f);
+    insertLabel = insertLabel.removeFromTop (24.0f).removeFromLeft (76.0f);
+    g.setColour (juce::Colour::fromRGBA (132, 176, 206, 152));
+    g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+    g.drawText ("INSERT", insertLabel.toNearestInt(), juce::Justification::centredLeft, true);
+
     const std::array<juce::String, 6> params { "pitch", "amp", "sustain", "pan", "fold", "otherFold" };
+    const std::array<juce::Colour, 6> paramColours {
+        juce::Colour::fromRGB (126, 220, 255),
+        juce::Colour::fromRGB (255, 214, 92),
+        juce::Colour::fromRGB (135, 224, 166),
+        juce::Colour::fromRGB (255, 170, 132),
+        juce::Colour::fromRGB (190, 142, 255),
+        juce::Colour::fromRGB (245, 136, 205)
+    };
     for (int i = 0; i < static_cast<int> (params.size()); ++i)
     {
         auto chip = planetScEditorParamChipBounds (overlay, i);
-        g.setColour (juce::Colour::fromRGBA (18, 29, 58, 232));
-        g.fillRoundedRectangle (chip, 8.0f);
-        g.setColour (juce::Colour::fromRGBA (132, 214, 255, 86));
-        g.drawRoundedRectangle (chip, 8.0f, 1.0f);
-        g.setColour (juce::Colour::fromRGBA (224, 238, 255, 220));
-        g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        const auto tokenColour = paramColours[static_cast<size_t> (i)];
+        g.setColour (tokenColour.withAlpha (0.12f));
+        g.fillRoundedRectangle (chip, 12.0f);
+        g.setColour (tokenColour.withAlpha (0.62f));
+        g.drawRoundedRectangle (chip, 12.0f, 1.1f);
+        g.setColour (tokenColour.withAlpha (0.95f));
+        g.setFont (juce::FontOptions (11.0f, juce::Font::plain));
         g.drawText (params[static_cast<size_t> (i)], chip.toNearestInt(), juce::Justification::centred);
     }
 
