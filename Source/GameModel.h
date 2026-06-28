@@ -116,6 +116,7 @@ struct PlanetSurfaceState
     int depth = 16;
     juce::Colour skyColour = juce::Colours::black;
     juce::Colour fogColour = juce::Colours::black;
+    juce::String mode2ScProgram;
     std::array<int, maxWidth * maxDepth * height> blocks {};
 
     int getIndex (int x, int y, int z) const noexcept;

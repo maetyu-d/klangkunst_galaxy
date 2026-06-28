@@ -569,17 +569,46 @@ GameComponent::GameComponent()
         beatSynth.addVoice (new WaveVoice (synthEngine));
     beatSynth.addSound (new WaveSound());
 
+    planetScDocument.addListener (this);
+    planetScCodeEditor = std::make_unique<juce::CodeEditorComponent> (planetScDocument, &planetScTokeniser);
+    planetScCodeEditor->loadContent (getDefaultTitleMode2Program());
+    planetScCodeEditor->setLineNumbersShown (true);
+    planetScCodeEditor->setTabSize (4, true);
+    planetScCodeEditor->setScrollbarThickness (10);
+    planetScCodeEditor->setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 15.0f, juce::Font::plain)));
+    planetScCodeEditor->setColour (juce::CodeEditorComponent::backgroundColourId, juce::Colour::fromRGBA (4, 10, 24, 255));
+    planetScCodeEditor->setColour (juce::CodeEditorComponent::defaultTextColourId, juce::Colour::fromRGB (232, 242, 255));
+    planetScCodeEditor->setColour (juce::CodeEditorComponent::highlightColourId, juce::Colour::fromRGBA (118, 198, 255, 110));
+    planetScCodeEditor->setColour (juce::CodeEditorComponent::lineNumberBackgroundId, juce::Colour::fromRGBA (2, 7, 18, 255));
+    planetScCodeEditor->setColour (juce::CodeEditorComponent::lineNumberTextId, juce::Colour::fromRGBA (132, 176, 206, 170));
+
+    auto scheme = planetScTokeniser.getDefaultColourScheme();
+    scheme.set ("Keyword", juce::Colour::fromRGB (255, 214, 92));
+    scheme.set ("Identifier", juce::Colour::fromRGB (218, 234, 255));
+    scheme.set ("Integer", juce::Colour::fromRGB (135, 224, 166));
+    scheme.set ("Float", juce::Colour::fromRGB (135, 224, 166));
+    scheme.set ("String", juce::Colour::fromRGB (255, 170, 132));
+    scheme.set ("Comment", juce::Colour::fromRGBA (138, 164, 186, 180));
+    scheme.set ("Operator", juce::Colour::fromRGB (132, 214, 255));
+    scheme.set ("Bracket", juce::Colour::fromRGB (255, 236, 182));
+    scheme.set ("Punctuation", juce::Colour::fromRGB (180, 208, 235));
+    planetScCodeEditor->setColourScheme (scheme);
+    planetScCodeEditor->setVisible (false);
+    addAndMakeVisible (*planetScCodeEditor);
+
     setOpaque (true);
     setWantsKeyboardFocus (true);
     setAudioChannels (0, 2);
     grabKeyboardFocus();
     updateMusicState();
+    updatePlanetScEditorLayout();
     startTimerHz (30);
 }
 
 GameComponent::~GameComponent()
 {
     saveActivePlanet();
+    planetScDocument.removeListener (this);
     shutdownAudio();
 }
 
@@ -673,34 +702,51 @@ void GameComponent::paint (juce::Graphics& g)
         case Scene::builder: drawBuilderScene (g, content); break;
     }
 
+    if (planetScEditorOpen)
+        drawPlanetScEditorOverlay (g, getLocalBounds().reduced (30));
+
     drawVignette (g, getLocalBounds());
 }
 
 void GameComponent::resized()
 {
+    updatePlanetScEditorLayout();
     if (firstPersonCursorCaptured)
         recenterFirstPersonMouse();
 }
 
-void GameComponent::prepareToPlay (int, double sampleRate)
+void GameComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRate)
 {
     const juce::ScopedLock sl (synthLock);
     currentSampleRate = sampleRate;
     synth.setCurrentPlaybackSampleRate (sampleRate);
     beatSynth.setCurrentPlaybackSampleRate (sampleRate);
+    const int blockSize = juce::jmax (64, samplesPerBlockExpected);
+    embeddedScPrepared = embeddedScAudio.prepare (sampleRate, blockSize, 2);
+    embeddedScScratch.setSize (2, blockSize, false, true, false);
+    embeddedScTransportSeconds = 0.0;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 1;
 }
 
 void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
 {
     bufferToFill.clearActiveBufferRegion();
+    const bool useMode2 = isMode2AudioEnabled();
 
     if (currentScene == Scene::builder && performanceMode)
     {
         const juce::ScopedLock sl (synthLock);
         juce::MidiBuffer midi;
         juce::MidiBuffer beatMidi;
+        std::vector<ScheduledMode2Note> scheduledMode2Notes;
         const float blockSeconds = static_cast<float> (bufferToFill.numSamples / juce::jmax (1.0, currentSampleRate));
         const double stepSeconds = 60.0 / juce::jmax (60.0, performanceBpm) / 4.0;
+        auto addMode2Note = [&scheduledMode2Notes] (int midiNote, float velocity, float lengthSeconds, int sampleOffset)
+        {
+            const float pan = midiNote >= 120 ? 0.0f : juce::jlimit (-0.8f, 0.8f, (midiNote - 60) / 18.0f);
+            scheduledMode2Notes.push_back ({ sampleOffset, midiNote, juce::jlimit (0.0f, 1.0f, velocity), lengthSeconds, pan });
+        };
 
         double localTime = 0.0;
         while (localTime < blockSeconds)
@@ -769,30 +815,36 @@ void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
                 {
                     addBeatEvent (beatMidi, midiNote, juce::jlimit (0.0f, 1.0f, velocity * 0.80f), sampleOffset, bufferToFill.numSamples);
                 };
+                auto hitMode2 = [&addMode2Note, sampleOffset] (int midiNote, float velocity)
+                {
+                    const float scaledVelocity = juce::jlimit (0.0f, 1.0f, velocity * 0.80f * 0.74f);
+                    const float noteLengthSeconds = midiNote == 120 ? 0.12f : midiNote == 121 ? 0.09f : midiNote == 122 ? 0.03f : 0.05f;
+                    addMode2Note (midiNote, scaledVelocity, noteLengthSeconds, sampleOffset);
+                };
 
                 switch (drumMode)
                 {
                     case DrumMode::rezStraight:
-                        if ((step % 4) == 0) hit (120, 0.82f);
-                        if (step == 4 || step == 12) hit (121, 0.60f);
-                        if ((step % 2) == 1) hit (122, 0.18f + ((step % 4) == 3 ? 0.05f : 0.0f));
+                        if ((step % 4) == 0) { if (useMode2) hitMode2 (120, 0.82f); else hit (120, 0.82f); }
+                        if (step == 4 || step == 12) { if (useMode2) hitMode2 (121, 0.60f); else hit (121, 0.60f); }
+                        if ((step % 2) == 1) { if (useMode2) hitMode2 (122, 0.18f + ((step % 4) == 3 ? 0.05f : 0.0f)); else hit (122, 0.18f + ((step % 4) == 3 ? 0.05f : 0.0f)); }
                         break;
                     case DrumMode::tightPulse:
-                        if (step == 0 || step == 8 || step == 12) hit (120, 0.78f);
-                        if (step == 4 || step == 12) hit (121, 0.58f);
-                        if ((step % 2) == 1) hit (122, 0.17f);
-                        if (step == 15) hit (123, 0.18f);
+                        if (step == 0 || step == 8 || step == 12) { if (useMode2) hitMode2 (120, 0.78f); else hit (120, 0.78f); }
+                        if (step == 4 || step == 12) { if (useMode2) hitMode2 (121, 0.58f); else hit (121, 0.58f); }
+                        if ((step % 2) == 1) { if (useMode2) hitMode2 (122, 0.17f); else hit (122, 0.17f); }
+                        if (step == 15) { if (useMode2) hitMode2 (123, 0.18f); else hit (123, 0.18f); }
                         break;
                     case DrumMode::forwardStep:
-                        if (step == 0 || step == 8 || step == 14) hit (120, 0.76f);
-                        if (step == 4 || step == 12) hit (121, 0.56f);
-                        if ((step % 2) == 1) hit (122, 0.16f + ((step == 11 || step == 15) ? 0.05f : 0.0f));
+                        if (step == 0 || step == 8 || step == 14) { if (useMode2) hitMode2 (120, 0.76f); else hit (120, 0.76f); }
+                        if (step == 4 || step == 12) { if (useMode2) hitMode2 (121, 0.56f); else hit (121, 0.56f); }
+                        if ((step % 2) == 1) { if (useMode2) hitMode2 (122, 0.16f + ((step == 11 || step == 15) ? 0.05f : 0.0f)); else hit (122, 0.16f + ((step == 11 || step == 15) ? 0.05f : 0.0f)); }
                         break;
                     case DrumMode::railLine:
-                        if ((step % 4) == 0) hit (120, 0.72f);
-                        if (step == 4 || step == 12) hit (121, 0.52f);
-                        if ((step % 2) == 1) hit (122, 0.15f);
-                        if (step == 8 || step == 15) hit (123, 0.16f);
+                        if ((step % 4) == 0) { if (useMode2) hitMode2 (120, 0.72f); else hit (120, 0.72f); }
+                        if (step == 4 || step == 12) { if (useMode2) hitMode2 (121, 0.52f); else hit (121, 0.52f); }
+                        if ((step % 2) == 1) { if (useMode2) hitMode2 (122, 0.15f); else hit (122, 0.15f); }
+                        if (step == 8 || step == 15) { if (useMode2) hitMode2 (123, 0.16f); else hit (123, 0.16f); }
                         break;
                     case DrumMode::reactiveBreakbeat:
                     default:
@@ -837,23 +889,42 @@ void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
         while (transportPhase > 1.0f)
             transportPhase -= 1.0f;
 
-        synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
-        if (! performanceBeatMuted)
-            beatSynth.renderNextBlock (*bufferToFill.buffer, beatMidi, bufferToFill.startSample, bufferToFill.numSamples);
+        if (useMode2)
+        {
+            if (performanceBeatMuted)
+                scheduledMode2Notes.clear();
+            renderScheduledEmbeddedScNotes (bufferToFill, scheduledMode2Notes, performanceBpm, blockSeconds);
+        }
+        else
+        {
+            synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
+            if (! performanceBeatMuted)
+                beatSynth.renderNextBlock (*bufferToFill.buffer, beatMidi, bufferToFill.startSample, bufferToFill.numSamples);
+        }
         return;
     }
 
     const juce::ScopedLock sl (synthLock);
     juce::MidiBuffer midi;
+    std::vector<ScheduledMode2Note> scheduledMode2Notes;
     const float blockSeconds = static_cast<float> (bufferToFill.numSamples / juce::jmax (1.0, currentSampleRate));
     const double ambientBpm = static_cast<double> (juce::jmap (transportRate, 0.16f, 0.42f, 72.0f, 128.0f));
     const double stepSeconds = 60.0 / ambientBpm / (currentScene == Scene::title ? 1.0 : 2.0);
     const auto chordNotes = getAmbientChordMidiNotes();
+    auto addMode2Note = [&scheduledMode2Notes] (int midiNote, float velocity, float lengthSeconds, int sampleOffset)
+    {
+        scheduledMode2Notes.push_back ({ sampleOffset, midiNote, juce::jlimit (0.0f, 1.0f, velocity), lengthSeconds,
+                                         juce::jlimit (-0.8f, 0.8f, (midiNote - 60) / 18.0f) });
+    };
 
-    auto addAmbientNote = [this, &midi, &bufferToFill] (int midiNote, float velocity, float lengthSeconds, int sampleOffset)
+    auto addAmbientNote = [this, &midi] (int midiNote, float velocity, float lengthSeconds, int sampleOffset)
     {
         midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, juce::jlimit (0.0f, 1.0f, velocity)), sampleOffset);
         schedulePendingNoteOff (pendingNoteOffs, midiNote, lengthSeconds);
+    };
+    auto addAmbientMode2Note = [&addMode2Note] (int midiNote, float velocity, float lengthSeconds, int sampleOffset)
+    {
+        addMode2Note (midiNote, velocity, lengthSeconds, sampleOffset);
     };
 
     double localTime = 0.0;
@@ -875,33 +946,53 @@ void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
         if (currentScene == Scene::title)
         {
             for (size_t i = 0; i < chordNotes.size(); ++i)
-                addAmbientNote (chordNotes[i], 0.10f + 0.025f * static_cast<float> (i), 0.95f, sampleOffset);
+                if (useMode2) addAmbientMode2Note (chordNotes[i], 0.10f + 0.025f * static_cast<float> (i), 0.95f, sampleOffset);
+                else addAmbientNote (chordNotes[i], 0.10f + 0.025f * static_cast<float> (i), 0.95f, sampleOffset);
 
             if ((phraseStep % 2) == 0)
-                addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 12 + ((phraseStep / 2) % 3) * 2), 0.12f, 0.28f, sampleOffset);
+            {
+                const int midiNote = quantizePerformanceMidi (getAmbientRootMidi() + 12 + ((phraseStep / 2) % 3) * 2);
+                if (useMode2) addAmbientMode2Note (midiNote, 0.12f, 0.28f, sampleOffset);
+                else addAmbientNote (midiNote, 0.12f, 0.28f, sampleOffset);
+            }
         }
         else if (currentScene == Scene::galaxy)
         {
             for (size_t i = 0; i < chordNotes.size(); ++i)
-                addAmbientNote (chordNotes[i], 0.11f + 0.03f * static_cast<float> (i == 0), 0.78f, sampleOffset);
+                if (useMode2) addAmbientMode2Note (chordNotes[i], 0.11f + 0.03f * static_cast<float> (i == 0), 0.78f, sampleOffset);
+                else addAmbientNote (chordNotes[i], 0.11f + 0.03f * static_cast<float> (i == 0), 0.78f, sampleOffset);
 
             if ((phraseStep % 2) == 1)
-                addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 7 + ((ambientStepIndex / 2) % 4)), 0.10f, 0.18f, sampleOffset);
+            {
+                const int midiNote = quantizePerformanceMidi (getAmbientRootMidi() + 7 + ((ambientStepIndex / 2) % 4));
+                if (useMode2) addAmbientMode2Note (midiNote, 0.10f, 0.18f, sampleOffset);
+                else addAmbientNote (midiNote, 0.10f, 0.18f, sampleOffset);
+            }
         }
         else if (currentScene == Scene::landing)
         {
             for (size_t i = 0; i < chordNotes.size(); ++i)
-                addAmbientNote (chordNotes[i], 0.12f + 0.02f * static_cast<float> (i), 0.62f, sampleOffset);
+                if (useMode2) addAmbientMode2Note (chordNotes[i], 0.12f + 0.02f * static_cast<float> (i), 0.62f, sampleOffset);
+                else addAmbientNote (chordNotes[i], 0.12f + 0.02f * static_cast<float> (i), 0.62f, sampleOffset);
 
-            addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 12 + (phraseStep % 3) * 2), 0.11f, 0.20f, sampleOffset);
+            {
+                const int midiNote = quantizePerformanceMidi (getAmbientRootMidi() + 12 + (phraseStep % 3) * 2);
+                if (useMode2) addAmbientMode2Note (midiNote, 0.11f, 0.20f, sampleOffset);
+                else addAmbientNote (midiNote, 0.11f, 0.20f, sampleOffset);
+            }
         }
         else
         {
             for (size_t i = 0; i < chordNotes.size(); ++i)
-                addAmbientNote (chordNotes[i], 0.10f + 0.02f * static_cast<float> (i), 0.36f, sampleOffset);
+                if (useMode2) addAmbientMode2Note (chordNotes[i], 0.10f + 0.02f * static_cast<float> (i), 0.36f, sampleOffset);
+                else addAmbientNote (chordNotes[i], 0.10f + 0.02f * static_cast<float> (i), 0.36f, sampleOffset);
 
             if ((phraseStep % 2) == 0)
-                addAmbientNote (quantizePerformanceMidi (getAmbientRootMidi() + 12 + (phraseStep % 4)), 0.09f, 0.14f, sampleOffset);
+            {
+                const int midiNote = quantizePerformanceMidi (getAmbientRootMidi() + 12 + (phraseStep % 4));
+                if (useMode2) addAmbientMode2Note (midiNote, 0.09f, 0.14f, sampleOffset);
+                else addAmbientNote (midiNote, 0.09f, 0.14f, sampleOffset);
+            }
         }
 
         ++ambientStepIndex;
@@ -925,7 +1016,10 @@ void GameComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
     while (transportPhase > 1.0f)
         transportPhase -= 1.0f;
 
-    synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
+    if (useMode2)
+        renderScheduledEmbeddedScNotes (bufferToFill, scheduledMode2Notes, ambientBpm, blockSeconds);
+    else
+        synth.renderNextBlock (*bufferToFill.buffer, midi, bufferToFill.startSample, bufferToFill.numSamples);
 }
 
 void GameComponent::releaseResources()
@@ -933,6 +1027,9 @@ void GameComponent::releaseResources()
     const juce::ScopedLock sl (synthLock);
     pendingNoteOffs.clear();
     pendingBeatNoteOffs.clear();
+    embeddedScAudio.release();
+    embeddedScPrepared = false;
+    embeddedScScratch.setSize (0, 0);
 }
 
 void GameComponent::mouseMove (const juce::MouseEvent& event)
@@ -1066,6 +1163,9 @@ void GameComponent::mouseDown (const juce::MouseEvent& event)
     if (! hasKeyboardFocus (true))
         grabKeyboardFocus();
 
+    if ((currentScene == Scene::landing || currentScene == Scene::builder) && planetScEditorOpen)
+        return;
+
     if (currentScene == Scene::builder && performanceMode)
         return;
 
@@ -1089,6 +1189,18 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
     if (currentScene == Scene::title)
     {
         const auto titleArea = getTitleInteractionArea();
+        if (titleModeToggleChipBounds (titleArea, 0).contains (event.position))
+        {
+            setTitleAudioMode (TitleAudioMode::mode1Internal);
+            return;
+        }
+
+        if (titleModeToggleChipBounds (titleArea, 1).contains (event.position))
+        {
+            setTitleAudioMode (TitleAudioMode::mode2EmbeddedSc);
+            return;
+        }
+
         if (titleSlotOverlayMode != TitleSlotOverlayMode::none)
         {
             const auto overlay = getTitleSlotOverlayBounds (titleArea);
@@ -1175,6 +1287,60 @@ void GameComponent::mouseUp (const juce::MouseEvent& event)
                 return;
             }
         }
+    }
+
+    if ((currentScene == Scene::landing || currentScene == Scene::builder) && planetScEditorOpen)
+    {
+        const auto overlay = planetScEditorOverlayBounds (getLocalBounds().reduced (30).toFloat());
+        if (planetScEditorToolbarButtonBounds (overlay, 0).contains (event.position))
+        {
+            savePlanetScProgram();
+            return;
+        }
+
+        if (planetScEditorToolbarButtonBounds (overlay, 1).contains (event.position))
+        {
+            compilePlanetScProgramNow();
+            return;
+        }
+
+        if (planetScEditorToolbarButtonBounds (overlay, 2).contains (event.position))
+        {
+            tidyPlanetScProgram();
+            return;
+        }
+
+        if (planetScEditorToolbarButtonBounds (overlay, 3).contains (event.position))
+        {
+            resetPlanetScProgramToDefault();
+            return;
+        }
+
+        const std::array<juce::String, 6> params { "pitch", "amp", "sustain", "pan", "fold", "otherFold" };
+        for (int i = 0; i < static_cast<int> (params.size()); ++i)
+        {
+            if (planetScEditorParamChipBounds (overlay, i).contains (event.position))
+            {
+                insertPlanetScToken (params[static_cast<size_t> (i)]);
+                return;
+            }
+        }
+
+        if (planetScEditorCloseBounds (overlay).contains (event.position) || ! overlay.contains (event.position))
+        {
+            closePlanetScEditor();
+            return;
+        }
+
+        return;
+    }
+
+    if ((currentScene == Scene::landing || currentScene == Scene::builder)
+        && titleAudioMode == TitleAudioMode::mode2EmbeddedSc
+        && planetScButtonBounds (getLocalBounds().reduced (30).toFloat()).contains (event.position))
+    {
+        openPlanetScEditor();
+        return;
     }
 
     if (currentScene == Scene::builder)
@@ -1408,6 +1574,38 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
     }
     else if (currentScene == Scene::landing)
     {
+        if (planetScEditorOpen)
+        {
+            const auto mods = key.getModifiers();
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && lowerChar == 's')
+            {
+                savePlanetScProgram();
+                return true;
+            }
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && key == juce::KeyPress::returnKey)
+            {
+                compilePlanetScProgramNow();
+                return true;
+            }
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && lowerChar == 't')
+            {
+                tidyPlanetScProgram();
+                return true;
+            }
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && lowerChar == 'r')
+            {
+                resetPlanetScProgramToDefault();
+                return true;
+            }
+            if (key == juce::KeyPress::escapeKey)
+            {
+                closePlanetScEditor();
+                return true;
+            }
+
+            return false;
+        }
+
         if (key == juce::KeyPress::returnKey || key.getTextCharacter() == ' ')
         {
             enterBuilder();
@@ -1422,6 +1620,38 @@ bool GameComponent::keyPressed (const juce::KeyPress& key)
     }
     else if (currentScene == Scene::builder)
     {
+        if (planetScEditorOpen)
+        {
+            const auto mods = key.getModifiers();
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && lowerChar == 's')
+            {
+                savePlanetScProgram();
+                return true;
+            }
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && key == juce::KeyPress::returnKey)
+            {
+                compilePlanetScProgramNow();
+                return true;
+            }
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && lowerChar == 't')
+            {
+                tidyPlanetScProgram();
+                return true;
+            }
+            if ((mods.isCommandDown() || mods.isCtrlDown()) && lowerChar == 'r')
+            {
+                resetPlanetScProgramToDefault();
+                return true;
+            }
+            if (key == juce::KeyPress::escapeKey)
+            {
+                closePlanetScEditor();
+                return true;
+            }
+
+            return false;
+        }
+
         if (key == juce::KeyPress::escapeKey)
         {
             performanceMode = false;
@@ -1738,6 +1968,9 @@ void GameComponent::setScene (Scene newScene)
     currentScene = newScene;
     if (currentScene != Scene::galaxy)
         galaxyLogOpen = false;
+    if (currentScene != Scene::landing && currentScene != Scene::builder)
+        closePlanetScEditor();
+    updatePlanetScEditorLayout();
     updateMusicState();
     updateFirstPersonMouseCapture();
     repaint();
@@ -1874,7 +2107,12 @@ void GameComponent::ensureActivePlanetLoaded()
     if (activePlanetState == nullptr)
     {
         activePlanetState = std::make_unique<PlanetSurfaceState> (GalaxyGenerator::generateSurface (planet));
+        activePlanetState->mode2ScProgram = getDefaultTitleMode2Program();
         persistence.savePlanet (*activePlanetState);
+    }
+    else if (activePlanetState->mode2ScProgram.trim().isEmpty())
+    {
+        activePlanetState->mode2ScProgram = getDefaultTitleMode2Program();
     }
 
     shouldRecenterIsometricOnEntry = true;
@@ -2396,15 +2634,13 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
             focalNote = hitNotes.front();
 
         const float velocity = juce::jlimit (0.20f, 0.56f, 0.28f + 0.025f * static_cast<float> (hitNotes.size()));
-        synth.noteOn (1, focalNote, velocity);
-        schedulePendingNoteOff (pendingNoteOffs, focalNote, 1.30f);
+        playNoteLocked (focalNote, velocity, 1.30f);
         galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
 
         if ((beat % 8) == 0)
         {
             const int haloNote = quantizePerformanceMidi (focalNote + 12);
-            synth.noteOn (1, haloNote, velocity * 0.10f);
-            schedulePendingNoteOff (pendingNoteOffs, haloNote, 1.55f);
+            playNoteLocked (haloNote, velocity * 0.10f, 1.55f, 0.18f);
             galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
         }
         triggered = 1;
@@ -2416,8 +2652,7 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
         {
             const int midiNote = hitNotes[i];
             const float velocity = juce::jlimit (0.10f, 0.58f, 0.20f + 0.024f * static_cast<float> (i));
-            synth.noteOn (1, midiNote, velocity);
-            schedulePendingNoteOff (pendingNoteOffs, midiNote, 0.16f);
+            playNoteLocked (midiNote, velocity, 0.16f, juce::jlimit (-0.7f, 0.7f, static_cast<float> (i) * 0.18f - 0.22f));
             galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
             ++triggered;
         }
@@ -2456,8 +2691,7 @@ void GameComponent::triggerPerformanceNotesAtCell (juce::Point<int> cell)
                 for (size_t i = 0; i < mirroredNotes.size(); ++i)
                 {
                     const float velocity = juce::jlimit (0.08f, 0.34f, 0.12f + 0.018f * static_cast<float> (i));
-                    synth.noteOn (1, mirroredNotes[i], velocity);
-                    schedulePendingNoteOff (pendingNoteOffs, mirroredNotes[i], 0.22f);
+                    playNoteLocked (mirroredNotes[i], velocity, 0.22f, 0.28f);
                     galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
                 }
 
@@ -2489,8 +2723,7 @@ void GameComponent::addPerformanceImprovResponse (const std::vector<int>& hitNot
     auto addImprovNote = [this] (int midiNote, float velocity, float lengthSeconds)
     {
         const int finalMidi = juce::jlimit (0, 127, quantizePerformanceMidi (midiNote));
-        synth.noteOn (1, finalMidi, juce::jlimit (0.0f, 1.0f, velocity));
-        schedulePendingNoteOff (pendingNoteOffs, finalMidi, lengthSeconds);
+        playNoteLocked (finalMidi, velocity, lengthSeconds, juce::jlimit (-0.8f, 0.8f, (finalMidi - 60) / 18.0f));
         galaxyFuel = juce::jlimit (0.0f, galaxyFuelCapacity, galaxyFuel + 0.01f);
         performanceLastImprovMidi = finalMidi;
     };
@@ -4460,9 +4693,9 @@ juce::String GameComponent::getBuilderViewName() const
 
 juce::Rectangle<float> GameComponent::titleCardBounds (juce::Rectangle<float> area) const
 {
-    const auto width = juce::jmin (area.getWidth() - 64.0f, 1100.0f);
-    const auto height = juce::jmin (area.getHeight() - 120.0f, 470.0f);
-    return area.withSizeKeepingCentre (width, height).translated (0.0f, 8.0f);
+    const auto width = juce::jmin (area.getWidth() - 64.0f, 1120.0f);
+    const auto height = juce::jmin (area.getHeight() - 108.0f, 500.0f);
+    return area.withSizeKeepingCentre (width, height).translated (0.0f, 4.0f);
 }
 
 juce::Rectangle<float> GameComponent::getTitleInteractionArea() const
@@ -4472,12 +4705,87 @@ juce::Rectangle<float> GameComponent::getTitleInteractionArea() const
 
 juce::Rectangle<float> GameComponent::titleButtonBounds (juce::Rectangle<float> area, int index) const
 {
-    auto row = titleCardBounds (area).reduced (42.0f, 34.0f);
-    row.removeFromTop (row.getHeight() - 146.0f);
-    const float gap = 18.0f;
+    auto row = titleCardBounds (area).reduced (50.0f, 38.0f);
+    row.removeFromTop (42.0f + 20.0f + 176.0f + 24.0f);
+    const float gap = 20.0f;
     const float buttonWidth = (row.getWidth() - gap * 3.0f) / 4.0f;
     row.removeFromLeft ((buttonWidth + gap) * static_cast<float> (index));
-    return row.removeFromLeft (buttonWidth).removeFromTop (124.0f);
+    return row.removeFromLeft (buttonWidth).removeFromTop (118.0f);
+}
+
+juce::Rectangle<float> GameComponent::titleModeToggleBounds (juce::Rectangle<float> area) const
+{
+    auto card = titleCardBounds (area);
+    return { card.getRight() - 382.0f, card.getY() + 28.0f, 320.0f, 34.0f };
+}
+
+juce::Rectangle<float> GameComponent::titleModeToggleChipBounds (juce::Rectangle<float> area, int index) const
+{
+    auto row = titleModeToggleBounds (area);
+    row.removeFromLeft (102.0f);
+    const float gap = 8.0f;
+    const float chipWidth = (row.getWidth() - gap) * 0.5f;
+    row.removeFromLeft ((chipWidth + gap) * static_cast<float> (index));
+    return row.removeFromLeft (chipWidth);
+}
+
+juce::Rectangle<float> GameComponent::planetScButtonBounds (juce::Rectangle<float> area) const
+{
+    if (currentScene == Scene::landing)
+    {
+        auto content = area.reduced (46.0f, 46.0f);
+        content.removeFromLeft (content.getWidth() * 0.50f);
+        content.removeFromLeft (18.0f);
+        return content.reduced (20.0f, 20.0f).removeFromBottom (42.0f).removeFromRight (148.0f);
+    }
+
+    auto infoArea = area.reduced (46.0f, 46.0f);
+    infoArea.removeFromLeft (infoArea.getWidth() * 0.64f);
+    infoArea.removeFromLeft (18.0f);
+    return infoArea.reduced (24.0f, 24.0f).removeFromTop (42.0f).removeFromRight (138.0f);
+}
+
+juce::Rectangle<float> GameComponent::planetScEditorOverlayBounds (juce::Rectangle<float> area) const
+{
+    const float width = juce::jmin (area.getWidth() - 96.0f, 980.0f);
+    const float height = juce::jmin (area.getHeight() - 96.0f, 620.0f);
+    return area.withSizeKeepingCentre (width, height);
+}
+
+juce::Rectangle<float> GameComponent::planetScEditorTextBounds (juce::Rectangle<float> overlay) const
+{
+    return { overlay.getX() + 32.0f,
+             overlay.getY() + 162.0f,
+             overlay.getWidth() - 64.0f,
+             overlay.getHeight() - 250.0f };
+}
+
+juce::Rectangle<float> GameComponent::planetScEditorCloseBounds (juce::Rectangle<float> overlay) const
+{
+    return planetScEditorToolbarButtonBounds (overlay, 4);
+}
+
+juce::Rectangle<float> GameComponent::planetScEditorToolbarButtonBounds (juce::Rectangle<float> overlay, int index) const
+{
+    constexpr float buttonWidth = 108.0f;
+    constexpr float buttonHeight = 34.0f;
+    constexpr float gap = 10.0f;
+    const float x = overlay.getRight() - 32.0f - (buttonWidth + gap) * static_cast<float> (5 - index);
+    return { x, overlay.getY() + 28.0f, buttonWidth, buttonHeight };
+}
+
+juce::Rectangle<float> GameComponent::planetScEditorParamChipBounds (juce::Rectangle<float> overlay, int index) const
+{
+    auto chips = overlay.reduced (28.0f, 24.0f);
+    chips.removeFromTop (70.0f);
+    chips.removeFromTop (4.0f);
+    chips = chips.removeFromTop (36.0f);
+
+    constexpr int paramCount = 6;
+    const float chipGap = 8.0f;
+    const float chipWidth = (chips.getWidth() - chipGap * static_cast<float> (paramCount - 1)) / static_cast<float> (paramCount);
+    chips.removeFromLeft ((chipWidth + chipGap) * static_cast<float> (index));
+    return chips.removeFromLeft (chipWidth);
 }
 
 GameComponent::TitleAction GameComponent::titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const
@@ -4510,12 +4818,396 @@ juce::String GameComponent::titleActionLabel (TitleAction action) const
     return {};
 }
 
+juce::String GameComponent::getTitleAudioModeName (TitleAudioMode mode) const
+{
+    switch (mode)
+    {
+        case TitleAudioMode::mode1Internal:   return "Mode 1";
+        case TitleAudioMode::mode2EmbeddedSc: return "Mode 2";
+    }
+
+    return {};
+}
+
 bool GameComponent::isTitleActionEnabled (TitleAction action) const
 {
     if (action == TitleAction::resumeVoyage)
         return titleResumeAvailable;
 
     return true;
+}
+
+void GameComponent::setTitleAudioMode (TitleAudioMode mode)
+{
+    if (titleAudioMode == mode)
+        return;
+
+    titleAudioMode = mode;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 1;
+    embeddedScTransportSeconds = 0.0;
+    updatePlanetScEditorLayout();
+    repaint();
+}
+
+void GameComponent::updatePlanetScEditorLayout()
+{
+    const bool shouldShow = planetScEditorOpen
+                         && (currentScene == Scene::landing || currentScene == Scene::builder)
+                         && titleAudioMode == TitleAudioMode::mode2EmbeddedSc;
+    if (planetScCodeEditor != nullptr)
+    {
+        planetScCodeEditor->setVisible (shouldShow);
+        planetScCodeEditor->setBounds (planetScEditorTextBounds (planetScEditorOverlayBounds (getLocalBounds().reduced (30).toFloat())).toNearestInt());
+    }
+}
+
+void GameComponent::openPlanetScEditor()
+{
+    ensureActivePlanetLoaded();
+    if (activePlanetState == nullptr)
+        return;
+
+    if (activePlanetState->mode2ScProgram.trim().isEmpty())
+        activePlanetState->mode2ScProgram = getDefaultTitleMode2Program();
+
+    planetScEditorOpen = true;
+    setPlanetScEditorText (activePlanetState->mode2ScProgram, true);
+    planetScHasUnsavedChanges = false;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 1;
+    updatePlanetScEditorLayout();
+    if (planetScCodeEditor != nullptr)
+        planetScCodeEditor->grabKeyboardFocus();
+    repaint();
+}
+
+void GameComponent::closePlanetScEditor()
+{
+    if (! planetScEditorOpen)
+        return;
+
+    setActivePlanetScProgram (getPlanetScEditorText());
+    saveActivePlanet();
+    planetScHasUnsavedChanges = false;
+    planetScEditorOpen = false;
+    updatePlanetScEditorLayout();
+    grabKeyboardFocus();
+    repaint();
+}
+
+void GameComponent::savePlanetScProgram()
+{
+    setActivePlanetScProgram (getPlanetScEditorText());
+    saveActivePlanet();
+    planetScDocument.setSavePoint();
+    planetScHasUnsavedChanges = false;
+    planetScStatusText = "Saved to " + getSelectedPlanet().name + ".";
+    repaint();
+}
+
+void GameComponent::compilePlanetScProgramNow()
+{
+    setActivePlanetScProgram (getPlanetScEditorText());
+    planetScProgramDirty = false;
+    planetScCompileDebounceFrames = 0;
+    refreshPlanetScProgramStatus (true);
+    saveActivePlanet();
+    planetScDocument.setSavePoint();
+    planetScHasUnsavedChanges = false;
+    repaint();
+}
+
+void GameComponent::resetPlanetScProgramToDefault()
+{
+    const auto defaultProgram = getDefaultTitleMode2Program();
+    setPlanetScEditorText (defaultProgram, false);
+    setActivePlanetScProgram (defaultProgram);
+    planetScHasUnsavedChanges = true;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 1;
+    planetScStatusText = "Default SC patch restored.";
+    repaint();
+}
+
+void GameComponent::tidyPlanetScProgram()
+{
+    auto program = getPlanetScEditorText().replace ("\r\n", "\n").replace ("\r", "\n");
+    juce::StringArray lines;
+    lines.addLines (program);
+
+    juce::StringArray tidied;
+    for (auto line : lines)
+    {
+        line = line.trimEnd();
+        if (line.trim().isEmpty())
+        {
+            if (tidied.size() == 0 || tidied[tidied.size() - 1].isNotEmpty())
+                tidied.add ({});
+            continue;
+        }
+
+        tidied.add (line.trimStart());
+    }
+
+    while (tidied.size() > 0 && tidied[tidied.size() - 1].isEmpty())
+        tidied.remove (tidied.size() - 1);
+
+    const auto tidiedProgram = tidied.joinIntoString ("\n");
+    setPlanetScEditorText (tidiedProgram, false);
+    setActivePlanetScProgram (tidiedProgram);
+    planetScHasUnsavedChanges = true;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 1;
+    planetScStatusText = "Whitespace tidied.";
+    repaint();
+}
+
+juce::String GameComponent::getPlanetScEditorText() const
+{
+    return planetScDocument.getAllContent();
+}
+
+void GameComponent::setPlanetScEditorText (const juce::String& text, bool markClean)
+{
+    planetScLoadingDocument = true;
+    if (planetScCodeEditor != nullptr)
+        planetScCodeEditor->loadContent (text);
+    else
+        planetScDocument.replaceAllContent (text);
+
+    planetScLoadingDocument = false;
+
+    if (markClean)
+    {
+        planetScDocument.setSavePoint();
+        planetScHasUnsavedChanges = false;
+    }
+}
+
+void GameComponent::insertPlanetScToken (const juce::String& token)
+{
+    if (planetScCodeEditor == nullptr)
+        return;
+
+    planetScCodeEditor->insertTextAtCaret (token);
+    planetScCodeEditor->grabKeyboardFocus();
+}
+
+void GameComponent::codeDocumentTextInserted (const juce::String&, int)
+{
+    if (planetScLoadingDocument)
+        return;
+
+    setActivePlanetScProgram (getPlanetScEditorText());
+    planetScHasUnsavedChanges = true;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 12;
+    planetScStatusText = "Unsaved edits for this planet. Cmd+S saves, Cmd+Return compiles.";
+    repaint();
+}
+
+void GameComponent::codeDocumentTextDeleted (int, int)
+{
+    if (planetScLoadingDocument)
+        return;
+
+    setActivePlanetScProgram (getPlanetScEditorText());
+    planetScHasUnsavedChanges = true;
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 12;
+    planetScStatusText = "Unsaved edits for this planet. Cmd+S saves, Cmd+Return compiles.";
+    repaint();
+}
+
+juce::String GameComponent::getActivePlanetScProgram() const
+{
+    if (activePlanetState != nullptr && activePlanetState->mode2ScProgram.trim().isNotEmpty())
+        return activePlanetState->mode2ScProgram;
+
+    return getDefaultTitleMode2Program();
+}
+
+void GameComponent::setActivePlanetScProgram (const juce::String& program)
+{
+    if (activePlanetState == nullptr)
+        return;
+
+    activePlanetState->mode2ScProgram = program;
+}
+
+juce::String GameComponent::getDefaultTitleMode2Program() const
+{
+    return R"SC(var freq = pitch.midicps;
+var env = EnvGen.kr(Env.perc(0.002, sustain.max(0.04), curve: -6), doneAction: 2);
+var body = Mix(Saw.ar(freq * [1.0, 1.005])) * 0.22;
+var shimmer = SinOsc.ar(freq * 2.0 + (fold * freq * 0.12), 0, 0.08);
+var sig = RLPF.ar(body + shimmer, (freq * (2.4 + fold * 4.5)).clip(120, 7200), 0.18 + (otherFold * 0.30));
+Out.ar(out, Pan2.ar((sig * env * amp).softclip, pan));)SC";
+}
+
+void GameComponent::refreshPlanetScProgramStatus (bool forceCompile)
+{
+    if (titleAudioMode != TitleAudioMode::mode2EmbeddedSc)
+    {
+        planetScStatusText = "Mode 1 uses KlangKunst's built-in audio engine.";
+        return;
+    }
+
+    const auto trimmed = getActivePlanetScProgram().trim();
+    if (trimmed.isEmpty())
+    {
+        planetScStatusText = "Mode 2 needs some SuperCollider code.";
+        return;
+    }
+
+    if (! embeddedScPrepared || ! embeddedScAudio.isReady())
+    {
+        const auto status = embeddedScAudio.getLastError().trim();
+        planetScStatusText = status.isNotEmpty() ? "Embedded SC unavailable: " + status
+                                                 : "Embedded SC is not ready.";
+        return;
+    }
+
+    if (! forceCompile)
+    {
+        planetScStatusText = "Mode 2 ready. Edit this planet's SC code.";
+        return;
+    }
+
+    if (const auto synthName = getEmbeddedScSynthNameForProgram (trimmed); synthName.isNotEmpty())
+    {
+        planetScStatusText = "Embedded SC compiled successfully.";
+        return;
+    }
+
+    const auto error = embeddedScAudio.getLastError().trim();
+    planetScStatusText = error.isNotEmpty() ? "SC compile error: " + error
+                                            : "SC compile error.";
+}
+
+juce::String GameComponent::getEmbeddedScSynthNameForProgram (const juce::String& program)
+{
+    const auto trimmed = program.trim();
+    if (trimmed.isEmpty())
+        return {};
+
+    if (const auto existing = embeddedScProgramCache.find (trimmed); existing != embeddedScProgramCache.end())
+        return existing->second;
+
+    if (embeddedScProgramFailures.count (trimmed) > 0)
+        return {};
+
+    return compileEmbeddedScProgram (trimmed);
+}
+
+juce::String GameComponent::compileEmbeddedScProgram (const juce::String& program)
+{
+    const auto synthName = "klangkunst_mode2_" + juce::String (embeddedScNextProgramId++);
+    const auto source = wrapEmbeddedScProgramSource (synthName, program);
+
+    if (! embeddedScAudio.loadSynthDef (synthName, source))
+    {
+        embeddedScProgramFailures.insert (program);
+        return {};
+    }
+
+    embeddedScProgramCache[program] = synthName;
+    return synthName;
+}
+
+juce::String GameComponent::wrapEmbeddedScProgramSource (const juce::String& synthName, const juce::String& program)
+{
+    const auto trimmed = program.trim();
+
+    if (trimmed.containsIgnoreCase ("SynthDef("))
+        return trimmed.replace ("__name__", synthName, true);
+
+    return "SynthDef(\\"
+        + synthName
+        + ", { |out = 0, pitch = 60, amp = 0.24, sustain = 0.7, pan = 0, fold = 0, otherFold = 0|\n"
+        + trimmed
+        + "\n})";
+}
+
+bool GameComponent::isMode2AudioEnabled() const noexcept
+{
+    return titleAudioMode == TitleAudioMode::mode2EmbeddedSc
+        && embeddedScPrepared
+        && embeddedScAudio.isReady();
+}
+
+void GameComponent::playNoteLocked (int midiNote, float velocity, float lengthSeconds, float pan)
+{
+    if (isMode2AudioEnabled())
+    {
+        triggerEmbeddedScNote (midiNote, velocity, lengthSeconds, pan, performanceMode ? performanceBpm : juce::jmap (transportRate, 0.16f, 0.42f, 72.0f, 128.0f), embeddedScTransportSeconds);
+        return;
+    }
+
+    synth.noteOn (1, midiNote, juce::jlimit (0.0f, 1.0f, velocity));
+    schedulePendingNoteOff (pendingNoteOffs, midiNote, lengthSeconds);
+}
+
+void GameComponent::triggerEmbeddedScNote (int midiNote, float velocity, float sustainSeconds, float pan, double bpm, double timeSeconds)
+{
+    if (! embeddedScPrepared || ! embeddedScAudio.isReady())
+        return;
+
+    gridcollider::EventFields fields;
+    fields.timestampSeconds = juce::jmax (0.0, timeSeconds);
+    fields.tick = static_cast<std::uint64_t> (juce::jmax (0.0, timeSeconds * bpm / 60.0));
+    fields.sourceCell = { juce::jlimit (0, 63, juce::roundToInt (31.5f + pan * 28.0f)), juce::jlimit (0, 63, midiNote % 64) };
+    fields.instrumentName = "tone";
+    if (const auto synthName = getEmbeddedScSynthNameForProgram (getActivePlanetScProgram()); synthName.isNotEmpty())
+        fields.instrumentName = synthName;
+    fields.pitch = juce::jlimit (0, 127, midiNote);
+    fields.velocity = juce::jlimit (0.0f, 1.0f, velocity);
+    fields.durationTicks = 1;
+    fields.parameters["sustain"] = juce::String (juce::jmax (0.01f, sustainSeconds), 3);
+    fields.parameters["pan"] = juce::String (juce::jlimit (-1.0f, 1.0f, pan), 3);
+    fields.parameters["fold"] = juce::String (juce::jlimit (0.0f, 1.0f, (midiNote - 24) / 84.0f), 3);
+    fields.parameters["otherFold"] = juce::String (juce::jlimit (0.0f, 1.0f, velocity), 3);
+
+    embeddedScAudio.setTransport (bpm, fields.tick, true);
+    embeddedScAudio.enqueue ({ gridcollider::InternalEvent { gridcollider::NoteEvent { fields } } });
+}
+
+void GameComponent::renderEmbeddedScSlice (juce::AudioBuffer<float>& output, int startSample, int numSamples)
+{
+    if (numSamples <= 0 || ! embeddedScPrepared || ! embeddedScAudio.isReady())
+        return;
+
+    embeddedScScratch.setSize (output.getNumChannels(), numSamples, false, false, true);
+    embeddedScScratch.clear();
+    embeddedScAudio.render (embeddedScScratch);
+
+    for (int channel = 0; channel < juce::jmin (output.getNumChannels(), embeddedScScratch.getNumChannels()); ++channel)
+        output.addFrom (channel, startSample, embeddedScScratch, channel, 0, numSamples);
+}
+
+void GameComponent::renderScheduledEmbeddedScNotes (const juce::AudioSourceChannelInfo& bufferToFill,
+                                                    std::vector<ScheduledMode2Note>& notes,
+                                                    double bpm,
+                                                    double blockSeconds)
+{
+    std::sort (notes.begin(), notes.end(), [] (const ScheduledMode2Note& a, const ScheduledMode2Note& b)
+    {
+        return a.sampleOffset < b.sampleOffset;
+    });
+
+    int cursor = 0;
+    for (const auto& note : notes)
+    {
+        const int clampedOffset = juce::jlimit (0, bufferToFill.numSamples, note.sampleOffset);
+        renderEmbeddedScSlice (*bufferToFill.buffer, bufferToFill.startSample + cursor, clampedOffset - cursor);
+        const double eventTime = embeddedScTransportSeconds + static_cast<double> (clampedOffset) / juce::jmax (1.0, currentSampleRate);
+        triggerEmbeddedScNote (note.midiNote, note.velocity, note.sustainSeconds, note.pan, bpm, eventTime);
+        cursor = clampedOffset;
+    }
+
+    renderEmbeddedScSlice (*bufferToFill.buffer, bufferToFill.startSample + cursor, bufferToFill.numSamples - cursor);
+    embeddedScTransportSeconds += blockSeconds;
 }
 
 void GameComponent::enterGalaxyFromTitle (bool regenerateGalaxy)
@@ -4558,6 +5250,7 @@ juce::var GameComponent::serialiseVoyageSession() const
     object->setProperty ("galaxyStatusMessage", galaxyStatusMessage);
     object->setProperty ("galaxyStatusMessageFrames", galaxyStatusMessageFrames);
     object->setProperty ("titleResumeAvailable", titleResumeAvailable);
+    object->setProperty ("titleAudioMode", static_cast<int> (titleAudioMode));
     object->setProperty ("builderViewMode", static_cast<int> (builderViewMode));
     object->setProperty ("topDownBuildMode", static_cast<int> (topDownBuildMode));
     object->setProperty ("builderCursorX", builderCursorX);
@@ -4761,6 +5454,9 @@ void GameComponent::restoreVoyageSession (const juce::var& sessionState)
     galaxyStatusMessage = object->getProperty ("galaxyStatusMessage").toString();
     galaxyStatusMessageFrames = static_cast<int> (object->getProperty ("galaxyStatusMessageFrames"));
     titleResumeAvailable = static_cast<bool> (object->getProperty ("titleResumeAvailable"));
+    titleAudioMode = static_cast<TitleAudioMode> (juce::jlimit (0, 1, static_cast<int> (object->getProperty ("titleAudioMode"))));
+    planetScProgramDirty = true;
+    planetScCompileDebounceFrames = 1;
     resumeScene = static_cast<Scene> (juce::jlimit (0, 3, static_cast<int> (object->getProperty ("resumeScene"))));
     builderViewMode = static_cast<BuilderViewMode> (juce::jlimit (0, 1, static_cast<int> (object->getProperty ("builderViewMode"))));
     topDownBuildMode = static_cast<TopDownBuildMode> (juce::jlimit (0, 2, static_cast<int> (object->getProperty ("topDownBuildMode"))));
@@ -4949,6 +5645,7 @@ void GameComponent::restoreVoyageSession (const juce::var& sessionState)
 
     setScene (restoredScene);
     updateFirstPersonMouseCapture();
+    updatePlanetScEditorLayout();
     repaint();
 }
 
@@ -4989,6 +5686,7 @@ void GameComponent::performAutosave()
 void GameComponent::openTitleSlotOverlay (TitleSlotOverlayMode mode)
 {
     titleSlotOverlayMode = mode;
+    updatePlanetScEditorLayout();
     refreshTitleSaveSlots();
     titleSlotStatusMessage.clear();
     titleArmedOverwriteSlotKey.clear();
@@ -5004,6 +5702,7 @@ void GameComponent::openTitleSlotOverlay (TitleSlotOverlayMode mode)
 void GameComponent::closeTitleSlotOverlay()
 {
     titleSlotOverlayMode = TitleSlotOverlayMode::none;
+    updatePlanetScEditorLayout();
     titleSelectedSlotIndex = -1;
     titleSlotStatusMessage.clear();
     titleArmedOverwriteSlotKey.clear();
@@ -5306,7 +6005,7 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     g.fillEllipse (juce::Rectangle<float> (70.0f, 70.0f).withCentre ({ card.getRight() - 168.0f, card.getY() + 92.0f }));
 
     g.setColour (juce::Colour::fromRGBA (255, 255, 255, 34));
-    g.fillRoundedRectangle (card.expanded (24.0f, 18.0f), 40.0f);
+    g.fillRoundedRectangle (card.expanded (20.0f, 16.0f), 28.0f);
     g.setColour (juce::Colour::fromRGBA (188, 232, 255, 88));
     g.fillRoundedRectangle (card.expanded (10.0f, 8.0f).withHeight (32.0f).translated (0.0f, 6.0f), 18.0f);
 
@@ -5321,9 +6020,9 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     fill.addColour (0.76, juce::Colour::fromRGBA (255, 62, 204, 220));
     fill.addColour (0.92, juce::Colour::fromRGBA (255, 150, 88, 214));
     g.setGradientFill (fill);
-    g.fillRoundedRectangle (card, 32.0f);
+    g.fillRoundedRectangle (card, 24.0f);
     g.setColour (juce::Colour::fromRGBA (112, 214, 255, 170));
-    g.drawRoundedRectangle (card, 32.0f, 2.4f);
+    g.drawRoundedRectangle (card, 24.0f, 2.2f);
     juce::ColourGradient cardGloss (juce::Colour::fromRGBA (255, 255, 255, 46),
                                     card.getCentreX(), card.getY() + 6.0f,
                                     juce::Colour::fromRGBA (255, 255, 255, 0),
@@ -5340,12 +6039,43 @@ void GameComponent::drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area
     g.setColour (juce::Colour::fromRGBA (154, 210, 255, 12));
     g.fillPath (diagonalSheen);
 
-    auto inner = card.reduced (52.0f, 40.0f);
-    auto topRow = inner.removeFromTop (188.0f);
-    inner.removeFromTop (26.0f);
-    auto actionsRow = inner.removeFromTop (132.0f);
+    auto inner = card.reduced (52.0f, 38.0f);
+    auto topStrip = inner.removeFromTop (42.0f);
     inner.removeFromTop (20.0f);
+    auto topRow = inner.removeFromTop (176.0f);
+    inner.removeFromTop (24.0f);
+    auto actionsRow = inner.removeFromTop (118.0f);
+    inner.removeFromTop (18.0f);
     auto hintArea = inner.removeFromTop (22.0f);
+
+    auto modeToggle = titleModeToggleBounds (area.toFloat());
+    drawInfoPill (g, modeToggle, juce::Colour::fromRGBA (255, 214, 92, 192));
+    auto modeLabel = modeToggle.removeFromLeft (102.0f);
+    g.setColour (juce::Colour::fromRGBA (224, 236, 255, 188));
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText ("AUDIO MODE", modeLabel.toNearestInt(), juce::Justification::centred);
+    for (int i = 0; i < 2; ++i)
+    {
+        const auto chipBounds = titleModeToggleChipBounds (area.toFloat(), i);
+        const auto chipMode = i == 0 ? TitleAudioMode::mode1Internal : TitleAudioMode::mode2EmbeddedSc;
+        const bool selected = titleAudioMode == chipMode;
+        g.setColour (selected ? juce::Colour::fromRGBA (255, 214, 92, 228)
+                              : juce::Colour::fromRGBA (20, 28, 58, 188));
+        g.fillRoundedRectangle (chipBounds, 9.0f);
+        g.setColour (selected ? juce::Colour::fromRGBA (255, 246, 212, 220)
+                              : juce::Colour::fromRGBA (132, 214, 255, 96));
+        g.drawRoundedRectangle (chipBounds, 9.0f, 1.2f);
+        g.setColour (selected ? juce::Colour::fromRGBA (62, 36, 8, 230)
+                              : juce::Colour::fromRGBA (228, 238, 255, 210));
+        g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        g.drawText (getTitleAudioModeName (chipMode), chipBounds.toNearestInt(), juce::Justification::centred);
+    }
+
+    g.setColour (juce::Colour::fromRGBA (230, 244, 255, 76));
+    g.fillRoundedRectangle (topStrip.removeFromLeft (juce::jmin (520.0f, topStrip.getWidth() * 0.46f))
+                                    .withHeight (5.0f)
+                                    .translated (0.0f, 14.0f),
+                            2.5f);
 
     auto leftHero = topRow.removeFromLeft (topRow.getWidth() * 0.53f);
     topRow.removeFromLeft (30.0f);
@@ -6649,6 +7379,92 @@ float GameComponent::getGalaxyLogMaxScroll (juce::Rectangle<int> area)
     return juce::jmax (0.0f, contentHeight - listArea.getHeight());
 }
 
+void GameComponent::drawPlanetScEditorOverlay (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const auto overlay = planetScEditorOverlayBounds (area.toFloat());
+    g.setColour (juce::Colour::fromRGBA (1, 5, 16, 214));
+    g.fillRoundedRectangle (area.toFloat().reduced (8.0f), 22.0f);
+
+    g.setColour (juce::Colour::fromRGBA (7, 12, 28, 246));
+    g.fillRoundedRectangle (overlay, 18.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 214, 92, 190));
+    g.drawRoundedRectangle (overlay, 18.0f, 1.7f);
+
+    auto panel = overlay.reduced (28.0f, 24.0f);
+    auto header = panel.removeFromTop (70.0f);
+    const auto& planet = getSelectedPlanet();
+
+    auto titleBlock = header.removeFromLeft (header.getWidth() * 0.42f);
+    g.setColour (juce::Colour::fromRGBA (255, 244, 220, 244));
+    g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
+    g.drawText (planet.name + " SuperCollider", titleBlock.removeFromTop (30.0f).toNearestInt(), juce::Justification::centredLeft, true);
+    g.setColour (planetScHasUnsavedChanges ? juce::Colour::fromRGBA (255, 202, 106, 226)
+                                           : juce::Colour::fromRGBA (156, 224, 184, 220));
+    g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+    g.drawText (planetScHasUnsavedChanges ? "UNSAVED PLANET PATCH" : "SAVED FOR THIS PLANET",
+                titleBlock.toNearestInt(), juce::Justification::centredLeft, true);
+
+    const std::array<juce::String, 5> buttonLabels { "SAVE PLANET", "COMPILE", "TIDY", "RESET", "CLOSE" };
+    for (int i = 0; i < 5; ++i)
+    {
+        const auto button = planetScEditorToolbarButtonBounds (overlay, i);
+        const bool primary = i == 0;
+        g.setColour (primary ? juce::Colour::fromRGBA (255, 214, 92, 226)
+                             : juce::Colour::fromRGBA (22, 30, 64, 232));
+        g.fillRoundedRectangle (button, 8.0f);
+        g.setColour (primary ? juce::Colour::fromRGBA (255, 246, 212, 220)
+                             : juce::Colour::fromRGBA (132, 214, 255, 120));
+        g.drawRoundedRectangle (button, 8.0f, 1.2f);
+        g.setColour (primary ? juce::Colour::fromRGBA (54, 34, 10, 235)
+                             : juce::Colours::white);
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText (buttonLabels[static_cast<size_t> (i)], button.toNearestInt(), juce::Justification::centred);
+    }
+
+    const std::array<juce::String, 6> params { "pitch", "amp", "sustain", "pan", "fold", "otherFold" };
+    for (int i = 0; i < static_cast<int> (params.size()); ++i)
+    {
+        auto chip = planetScEditorParamChipBounds (overlay, i);
+        g.setColour (juce::Colour::fromRGBA (18, 29, 58, 232));
+        g.fillRoundedRectangle (chip, 8.0f);
+        g.setColour (juce::Colour::fromRGBA (132, 214, 255, 86));
+        g.drawRoundedRectangle (chip, 8.0f, 1.0f);
+        g.setColour (juce::Colour::fromRGBA (224, 238, 255, 220));
+        g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        g.drawText (params[static_cast<size_t> (i)], chip.toNearestInt(), juce::Justification::centred);
+    }
+
+    const auto codeWell = planetScEditorTextBounds (overlay).expanded (10.0f);
+    g.setColour (juce::Colour::fromRGBA (4, 10, 24, 255));
+    g.fillRoundedRectangle (codeWell, 10.0f);
+    g.setColour (juce::Colour::fromRGBA (132, 214, 255, 120));
+    g.drawRoundedRectangle (codeWell, 10.0f, 1.2f);
+
+    auto status = overlay.reduced (28.0f, 22.0f).removeFromBottom (40.0f);
+    g.setColour (juce::Colour::fromRGBA (14, 22, 48, 238));
+    g.fillRoundedRectangle (status, 9.0f);
+    g.setColour (juce::Colour::fromRGBA (255, 214, 92, 80));
+    g.drawRoundedRectangle (status, 9.0f, 1.0f);
+
+    const auto lineCount = juce::StringArray::fromLines (getPlanetScEditorText()).size();
+    const auto caret = planetScCodeEditor != nullptr ? planetScCodeEditor->getCaretPos()
+                                                     : juce::CodeDocument::Position (planetScDocument, 0);
+    auto statusLeft = status.reduced (14.0f, 0.0f).removeFromLeft (status.getWidth() * 0.26f);
+    g.setColour (juce::Colour::fromRGBA (180, 210, 236, 198));
+    g.setFont (juce::FontOptions (11.5f));
+    g.drawText (juce::String (lineCount) + " lines  |  Ln " + juce::String (caret.getLineNumber() + 1)
+                    + ", Col " + juce::String (caret.getIndexInLine() + 1)
+                    + "  |  " + (planetScHasUnsavedChanges ? "unsaved edits" : "saved on disk"),
+                statusLeft.toNearestInt(), juce::Justification::centredLeft, true);
+
+    auto statusRight = status.reduced (14.0f, 0.0f).withTrimmedLeft (status.getWidth() * 0.28f);
+    g.setColour (planetScStatusText.startsWithIgnoreCase ("SC compile error")
+                    ? juce::Colour::fromRGBA (255, 128, 112, 230)
+                    : juce::Colour::fromRGBA (255, 220, 138, 226));
+    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+    g.drawText (planetScStatusText, statusRight.toNearestInt(), juce::Justification::centredRight, true);
+}
+
 void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> area)
 {
     ensureActivePlanetLoaded();
@@ -6864,6 +7680,18 @@ void GameComponent::drawLandingScene (juce::Graphics& g, juce::Rectangle<int> ar
     inner.removeFromTop (8.0f * uiScale);
     auto footerRow = inner.removeFromTop (42.0f * uiScale);
     drawInfoChip (footerRow, "Enter descends   Esc returns   surface data is resident and persistent on disk");
+
+    if (titleAudioMode == TitleAudioMode::mode2EmbeddedSc)
+    {
+        auto scButton = planetScButtonBounds (getLocalBounds().reduced (30).toFloat());
+        g.setColour (juce::Colour::fromRGBA (255, 214, 92, 220));
+        g.fillRoundedRectangle (scButton, 9.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 246, 212, 230));
+        g.drawRoundedRectangle (scButton, 9.0f, 1.4f);
+        g.setColour (juce::Colour::fromRGBA (54, 34, 10, 235));
+        g.setFont (juce::FontOptions (13.0f * uiScale, juce::Font::bold));
+        g.drawText ("SC CODE", scButton.toNearestInt(), juce::Justification::centred);
+    }
 }
 
 void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> area)
@@ -7074,6 +7902,18 @@ void GameComponent::drawBuilderScene (juce::Graphics& g, juce::Rectangle<int> ar
                       footerInner.toNearestInt(),
                       juce::Justification::topLeft,
                       2);
+
+    if (titleAudioMode == TitleAudioMode::mode2EmbeddedSc)
+    {
+        auto scButton = planetScButtonBounds (getLocalBounds().reduced (30).toFloat());
+        g.setColour (juce::Colour::fromRGBA (255, 214, 92, 220));
+        g.fillRoundedRectangle (scButton, 8.0f);
+        g.setColour (juce::Colour::fromRGBA (255, 246, 212, 230));
+        g.drawRoundedRectangle (scButton, 8.0f, 1.4f);
+        g.setColour (juce::Colour::fromRGBA (54, 34, 10, 235));
+        g.setFont (juce::FontOptions (12.5f * uiScale, juce::Font::bold));
+        g.drawText ("SC CODE", scButton.toNearestInt(), juce::Justification::centred);
+    }
 }
 
 void GameComponent::drawPerformanceView (juce::Graphics& g, juce::Rectangle<float> area)
@@ -9366,6 +10206,18 @@ void GameComponent::stepPerformanceTenori()
 
 void GameComponent::timerCallback()
 {
+    if (planetScProgramDirty)
+    {
+        if (planetScCompileDebounceFrames > 0)
+            --planetScCompileDebounceFrames;
+
+        if (planetScCompileDebounceFrames <= 0)
+        {
+            refreshPlanetScProgramStatus (true);
+            planetScProgramDirty = false;
+        }
+    }
+
     for (auto it = performanceFlashes.begin(); it != performanceFlashes.end();)
     {
         it->life -= 0.08f;

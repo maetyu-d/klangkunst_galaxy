@@ -31,12 +31,27 @@ target_sources(KlangKunstGalaxy
     PRIVATE
         Source/Main.cpp
         Source/GameComponent.cpp
-        Source/GameModel.cpp)
+        Source/GameModel.cpp
+        ../unfolding/Source/EmbeddedScAudioEngine.cpp)
+
+target_include_directories(KlangKunstGalaxy
+    PRIVATE
+        ../unfolding/Source)
 
 target_compile_definitions(KlangKunstGalaxy
     PRIVATE
         JUCE_WEB_BROWSER=0
-        JUCE_USE_CURL=0)
+        JUCE_USE_CURL=0
+        GRIDCOLLIDER_ALCHEMY_SC_ROOT="/Users/user/Documents/weld2/ChucK_weld_engine")
+
+if (EXISTS "/Users/user/Documents/weld2/ChucK_weld_engine/third_party/supercollider/include/server/SC_WorldOptions.h")
+    target_include_directories(KlangKunstGalaxy SYSTEM
+        PRIVATE
+            "/Users/user/Documents/weld2/ChucK_weld_engine/third_party/supercollider/include/common"
+            "/Users/user/Documents/weld2/ChucK_weld_engine/third_party/supercollider/include/plugin_interface"
+            "/Users/user/Documents/weld2/ChucK_weld_engine/third_party/supercollider/include/server")
+    target_compile_definitions(KlangKunstGalaxy PRIVATE GRIDCOLLIDER_HAS_SC_HEADERS=1)
+endif()
 
 target_link_libraries(KlangKunstGalaxy
     PRIVATE

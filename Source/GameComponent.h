@@ -1,9 +1,13 @@
 #pragma once
 
 #include "GameModel.h"
+#include <EmbeddedScAudioEngine.h>
+#include <map>
+#include <set>
 
 class GameComponent final : public juce::AudioAppComponent,
-                            private juce::Timer
+                            private juce::Timer,
+                            private juce::CodeDocument::Listener
 {
 public:
     GameComponent();
@@ -47,6 +51,12 @@ private:
         none,
         load,
         save
+    };
+
+    enum class TitleAudioMode
+    {
+        mode1Internal,
+        mode2EmbeddedSc
     };
 
     enum class BuilderViewMode
@@ -217,6 +227,15 @@ private:
         bool pulse = false;
     };
 
+    struct ScheduledMode2Note
+    {
+        int sampleOffset = 0;
+        int midiNote = 60;
+        float velocity = 0.2f;
+        float sustainSeconds = 0.25f;
+        float pan = 0.0f;
+    };
+
     struct LogHeatmapHitTarget
     {
         juce::String planetId;
@@ -321,6 +340,7 @@ private:
     int selectedPlanetIndex = 0;
     TitleAction hoveredTitleAction = TitleAction::none;
     bool titleResumeAvailable = false;
+    TitleAudioMode titleAudioMode = TitleAudioMode::mode1Internal;
     TitleSlotOverlayMode titleSlotOverlayMode = TitleSlotOverlayMode::none;
     std::vector<SaveSlotSummary> titleSaveSlots;
     SaveSlotSummary titleRecoverySlot;
@@ -330,6 +350,15 @@ private:
     juce::String titleSlotStatusMessage;
     juce::String titleArmedOverwriteSlotKey;
     juce::String titleArmedDeleteSlotKey;
+    juce::CodeDocument planetScDocument;
+    juce::CPlusPlusCodeTokeniser planetScTokeniser;
+    std::unique_ptr<juce::CodeEditorComponent> planetScCodeEditor;
+    bool planetScEditorOpen = false;
+    bool planetScHasUnsavedChanges = false;
+    bool planetScLoadingDocument = false;
+    juce::String planetScStatusText = "Mode 2 inactive";
+    bool planetScProgramDirty = true;
+    int planetScCompileDebounceFrames = 0;
     bool autosavePending = false;
     int autosaveCountdownFrames = 0;
     std::unique_ptr<PlanetSurfaceState> activePlanetState;
@@ -409,6 +438,13 @@ private:
     ScaleType scaleType = ScaleType::minor;
     juce::Synthesiser synth;
     juce::Synthesiser beatSynth;
+    gridcollider::EmbeddedScAudioEngine embeddedScAudio;
+    juce::AudioBuffer<float> embeddedScScratch;
+    bool embeddedScPrepared = false;
+    double embeddedScTransportSeconds = 0.0;
+    std::map<juce::String, juce::String> embeddedScProgramCache;
+    std::set<juce::String> embeddedScProgramFailures;
+    int embeddedScNextProgramId = 1;
     juce::CriticalSection synthLock;
     std::vector<PendingNoteOff> pendingNoteOffs;
     std::vector<PendingNoteOff> pendingBeatNoteOffs;
@@ -553,9 +589,44 @@ private:
     juce::Rectangle<float> titleCardBounds (juce::Rectangle<float> area) const;
     juce::Rectangle<float> getTitleInteractionArea() const;
     juce::Rectangle<float> titleButtonBounds (juce::Rectangle<float> area, int index) const;
+    juce::Rectangle<float> titleModeToggleBounds (juce::Rectangle<float> area) const;
+    juce::Rectangle<float> titleModeToggleChipBounds (juce::Rectangle<float> area, int index) const;
+    juce::Rectangle<float> planetScButtonBounds (juce::Rectangle<float> area) const;
+    juce::Rectangle<float> planetScEditorOverlayBounds (juce::Rectangle<float> area) const;
+    juce::Rectangle<float> planetScEditorTextBounds (juce::Rectangle<float> overlay) const;
+    juce::Rectangle<float> planetScEditorCloseBounds (juce::Rectangle<float> overlay) const;
+    juce::Rectangle<float> planetScEditorToolbarButtonBounds (juce::Rectangle<float> overlay, int index) const;
+    juce::Rectangle<float> planetScEditorParamChipBounds (juce::Rectangle<float> overlay, int index) const;
     TitleAction titleActionAt (juce::Point<float> position, juce::Rectangle<float> area) const;
     juce::String titleActionLabel (TitleAction action) const;
+    juce::String getTitleAudioModeName (TitleAudioMode mode) const;
     bool isTitleActionEnabled (TitleAction action) const;
+    void setTitleAudioMode (TitleAudioMode mode);
+    void updatePlanetScEditorLayout();
+    void openPlanetScEditor();
+    void closePlanetScEditor();
+    void savePlanetScProgram();
+    void compilePlanetScProgramNow();
+    void resetPlanetScProgramToDefault();
+    void tidyPlanetScProgram();
+    juce::String getPlanetScEditorText() const;
+    void setPlanetScEditorText (const juce::String& text, bool markClean);
+    void insertPlanetScToken (const juce::String& token);
+    juce::String getActivePlanetScProgram() const;
+    void setActivePlanetScProgram (const juce::String& program);
+    juce::String getDefaultTitleMode2Program() const;
+    void refreshPlanetScProgramStatus (bool forceCompile);
+    juce::String getEmbeddedScSynthNameForProgram (const juce::String& program);
+    juce::String compileEmbeddedScProgram (const juce::String& program);
+    static juce::String wrapEmbeddedScProgramSource (const juce::String& synthName, const juce::String& program);
+    bool isMode2AudioEnabled() const noexcept;
+    void playNoteLocked (int midiNote, float velocity, float lengthSeconds, float pan = 0.0f);
+    void triggerEmbeddedScNote (int midiNote, float velocity, float sustainSeconds, float pan, double bpm, double timeSeconds);
+    void renderEmbeddedScSlice (juce::AudioBuffer<float>& output, int startSample, int numSamples);
+    void renderScheduledEmbeddedScNotes (const juce::AudioSourceChannelInfo& bufferToFill,
+                                         std::vector<ScheduledMode2Note>& notes,
+                                         double bpm,
+                                         double blockSeconds);
     void enterGalaxyFromTitle (bool regenerateGalaxy);
     juce::var serialiseVoyageSession() const;
     void restoreVoyageSession (const juce::var& sessionState);
@@ -577,6 +648,7 @@ private:
     juce::Rectangle<float> getTitleSlotRowBounds (juce::Rectangle<float> overlay, int index) const;
     void drawHeader (juce::Graphics& g, juce::Rectangle<int> area);
     void drawTitleScene (juce::Graphics& g, juce::Rectangle<int> area);
+    void drawPlanetScEditorOverlay (juce::Graphics& g, juce::Rectangle<int> area);
     void drawGalaxyScene (juce::Graphics& g, juce::Rectangle<int> area);
     void drawGalaxyLogbook (juce::Graphics& g, juce::Rectangle<int> area);
     float getGalaxyLogMaxScroll (juce::Rectangle<int> area);
@@ -595,4 +667,6 @@ private:
     juce::Colour getRenderedBlockColour (int blockType, int zLayer, float brightness = 1.0f) const;
     juce::String getNoteNameForLayer (int zLayer) const;
     void timerCallback() override;
+    void codeDocumentTextInserted (const juce::String& newText, int insertIndex) override;
+    void codeDocumentTextDeleted (int startIndex, int endIndex) override;
 };

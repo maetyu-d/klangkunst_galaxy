@@ -974,6 +974,7 @@ juce::var PersistenceManager::serialiseState (const PlanetSurfaceState& state)
     object->setProperty ("depth", state.depth);
     object->setProperty ("skyColour", state.skyColour.toDisplayString (true));
     object->setProperty ("fogColour", state.fogColour.toDisplayString (true));
+    object->setProperty ("mode2ScProgram", state.mode2ScProgram);
 
     juce::Array<juce::var> blockData;
     blockData.ensureStorageAllocated (static_cast<int> (state.blocks.size()));
@@ -1001,6 +1002,7 @@ std::unique_ptr<PlanetSurfaceState> PersistenceManager::deserialiseState (const 
     state->depth = normalisedFootprint;
     state->skyColour = juce::Colour::fromString (object->getProperty ("skyColour").toString());
     state->fogColour = juce::Colour::fromString (object->getProperty ("fogColour").toString());
+    state->mode2ScProgram = object->getProperty ("mode2ScProgram").toString();
 
     if (const auto* blockArray = object->getProperty ("blocks").getArray(); blockArray != nullptr)
     {
